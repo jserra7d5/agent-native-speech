@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import re
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Iterator
 
@@ -26,7 +25,11 @@ if TYPE_CHECKING:
     from qwen_tts import Qwen3TTSModel
 
 from server.config import TTSConfig
+from server.tts_backend import preprocess
 from server.voice_profile import AVAILABLE_SPEAKERS, VoiceProfile, VoiceProfileRegistry
+
+# Backward-compat alias: call_manager.py imports this name.
+_preprocess = preprocess
 
 log = logging.getLogger(__name__)
 
@@ -41,94 +44,114 @@ OUTPUT_SAMPLE_RATE: int = 24_000
 CUSTOM_VOICE_MODEL_ID: str = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 BASE_MODEL_ID: str = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 
-#: Regex that matches fenced code blocks (```...```) with optional language tag.
-_CODE_BLOCK_RE: re.Pattern[str] = re.compile(
-    r"```[a-zA-Z0-9_+-]*\s*\n.*?\n\s*```",
-    re.DOTALL,
-)
+#: Crossfade duration in samples between concatenated audio chunks.
+#: 50 ms at 24 kHz = 1200 samples.  Smooths audible seams between chunks.
+CROSSFADE_SAMPLES: int = 1200
 
-#: Regex that matches inline code spans (`...`).
-_INLINE_CODE_RE: re.Pattern[str] = re.compile(r"`[^`]+`")
+#: Generation kwargs for voice cloning that prioritise output stability
+#: over expressiveness.  The defaults from Qwen3-TTS (temperature=0.9,
+#: top_k=50, top_p=1.0) are tuned for variety, not consistency.
+CLONE_GENERATE_KWARGS: dict[str, Any] = {
+    "temperature": 0.3,
+    "top_k": 10,
+    "top_p": 0.8,
+    "repetition_penalty": 1.1,
+    "subtalker_temperature": 0.3,
+    "subtalker_top_k": 10,
+    "subtalker_top_p": 0.8,
+    "non_streaming_mode": True,
+}
 
-#: Simple sentence splitter — splits on sentence-ending punctuation followed
-#: by whitespace.  Keeps the punctuation with the preceding sentence.
-_SENTENCE_SPLIT_RE: re.Pattern[str] = re.compile(r"(?<=[.!?])\s+")
-
-#: Maximum character length per synthesis chunk.  Sentences longer than this
-#: are further split at clause boundaries to avoid context-length issues.
-MAX_CHUNK_CHARS: int = 500
+#: Generation kwargs for preset voices (slightly tighter than defaults).
+PRESET_GENERATE_KWARGS: dict[str, Any] = {
+    "temperature": 0.7,
+    "top_k": 30,
+    "top_p": 0.9,
+    "repetition_penalty": 1.05,
+    "subtalker_temperature": 0.7,
+    "subtalker_top_k": 30,
+    "subtalker_top_p": 0.9,
+}
 
 
 # ---------------------------------------------------------------------------
-# Text preprocessing
+# Audio post-processing
 # ---------------------------------------------------------------------------
 
-def _strip_code_blocks(text: str) -> str:
-    """Replace fenced code blocks with a spoken placeholder and remove
-    inline code backticks.
+def _highpass_filter(
+    audio: np.ndarray,
+    cutoff_hz: float = 80.0,
+    sample_rate: int = OUTPUT_SAMPLE_RATE,
+    order: int = 4,
+) -> np.ndarray:
+    """Apply a Butterworth high-pass filter to remove low-frequency noise."""
+    from scipy.signal import butter, sosfilt  # noqa: PLC0415
 
-    Fenced blocks (````` ... `````) are replaced with "code block omitted"
-    so the listener knows something was skipped.  Inline code spans keep
-    their textual content but lose the backtick delimiters (they are
-    typically short enough to read aloud).
+    sos = butter(order, cutoff_hz, btype="high", fs=sample_rate, output="sos")
+    return sosfilt(sos, audio).astype(np.float32)
+
+
+def _rms_normalize(
+    audio: np.ndarray,
+    target_db: float = -20.0,
+    floor_db: float = -60.0,
+) -> np.ndarray:
+    """Normalize audio to a target RMS level in dBFS.
+
+    Segments quieter than *floor_db* are returned unchanged to avoid
+    amplifying near-silence or noise.
     """
-    # Replace fenced code blocks first (they may contain inline backticks).
-    text = _CODE_BLOCK_RE.sub(" code block omitted ", text)
+    rms = np.sqrt(np.mean(audio ** 2))
+    if rms < 1e-10:
+        return audio
 
-    # Strip backticks from inline code spans, keeping the inner text.
-    text = _INLINE_CODE_RE.sub(lambda m: m.group(0)[1:-1], text)
+    rms_db = 20.0 * np.log10(rms)
+    if rms_db < floor_db:
+        return audio
 
-    return text
+    gain_db = target_db - rms_db
+    gain = 10.0 ** (gain_db / 20.0)
+    return np.clip(audio * gain, -1.0, 1.0).astype(np.float32)
 
 
-def _split_into_chunks(text: str) -> list[str]:
-    """Split *text* into sentence-sized chunks suitable for synthesis.
+def _post_process(audio: np.ndarray) -> np.ndarray:
+    """High-pass filter + RMS normalize a synthesized audio chunk."""
+    audio = _highpass_filter(audio)
+    audio = _rms_normalize(audio)
+    return audio
 
-    Long inputs are broken at sentence boundaries so each chunk stays within
-    :data:`MAX_CHUNK_CHARS`.  Sentences that still exceed the limit after
-    the first split are further broken at comma / semicolon boundaries.
 
-    Returns a list of non-empty, stripped strings.
+def _crossfade_concat(
+    segments: list[np.ndarray],
+    fade_samples: int,
+) -> np.ndarray:
+    """Concatenate audio segments with a linear crossfade overlap.
+
+    If a segment is shorter than *fade_samples*, the overlap is reduced to
+    fit.  This eliminates the hard-cut seams between synthesis chunks.
     """
-    sentences = _SENTENCE_SPLIT_RE.split(text)
-    chunks: list[str] = []
+    if not segments:
+        return np.array([], dtype=np.float32)
+    if len(segments) == 1:
+        return segments[0]
 
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if not sentence:
+    result = segments[0]
+    for seg in segments[1:]:
+        overlap = min(fade_samples, len(result), len(seg))
+        if overlap <= 0:
+            result = np.concatenate([result, seg])
             continue
 
-        if len(sentence) <= MAX_CHUNK_CHARS:
-            chunks.append(sentence)
-        else:
-            # Further split on clause boundaries.
-            parts = re.split(r"(?<=[,;:])\s+", sentence)
-            current = ""
-            for part in parts:
-                candidate = f"{current} {part}".strip() if current else part
-                if len(candidate) <= MAX_CHUNK_CHARS:
-                    current = candidate
-                else:
-                    if current:
-                        chunks.append(current)
-                    current = part
-            if current:
-                chunks.append(current)
+        # Linear fade curves
+        fade_out = np.linspace(1.0, 0.0, overlap, dtype=np.float32)
+        fade_in = np.linspace(0.0, 1.0, overlap, dtype=np.float32)
 
-    return chunks
+        # Blend the overlapping region
+        blended = result[-overlap:] * fade_out + seg[:overlap] * fade_in
 
+        result = np.concatenate([result[:-overlap], blended, seg[overlap:]])
 
-def _preprocess(text: str) -> list[str]:
-    """Full preprocessing pipeline: strip code, normalise whitespace, split."""
-    text = _strip_code_blocks(text)
-
-    # Collapse multiple whitespace / newlines into single spaces.
-    text = re.sub(r"\s+", " ", text).strip()
-
-    if not text:
-        return []
-
-    return _split_into_chunks(text)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +220,7 @@ class TTSEngine:
         """
         profile = self._resolve_profile(voice)
 
-        chunks = _preprocess(text)
+        chunks = preprocess(text)
         if not chunks:
             raise ValueError(
                 "Nothing to synthesize: text is empty after preprocessing"
@@ -239,11 +262,11 @@ class TTSEngine:
 
             audio_segments.append(segment)
 
-        # Concatenate all chunks into a single contiguous array.
+        # Concatenate chunks with crossfade to eliminate audible seams.
         if len(audio_segments) == 1:
             audio = audio_segments[0]
         else:
-            audio = np.concatenate(audio_segments, axis=0)
+            audio = _crossfade_concat(audio_segments, CROSSFADE_SAMPLES)
 
         duration_s = len(audio) / OUTPUT_SAMPLE_RATE
         log.info(
@@ -271,7 +294,7 @@ class TTSEngine:
         """
         profile = self._resolve_profile(voice)
 
-        chunks = _preprocess(text)
+        chunks = preprocess(text)
         if not chunks:
             return
 
@@ -538,6 +561,7 @@ class TTSEngine:
                 text=chunk,
                 language=profile.language,
                 speaker=profile.speaker,
+                **PRESET_GENERATE_KWARGS,
             )
         else:
             prompt = self._get_or_create_prompt(profile)
@@ -545,6 +569,8 @@ class TTSEngine:
                 text=chunk,
                 language=profile.language,
                 voice_clone_prompt=prompt,
+                **CLONE_GENERATE_KWARGS,
             )
 
-        return np.asarray(wavs[0], dtype=np.float32)
+        segment = np.asarray(wavs[0], dtype=np.float32)
+        return _post_process(segment)

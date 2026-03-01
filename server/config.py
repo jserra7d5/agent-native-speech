@@ -18,9 +18,14 @@ class STTConfig:
 
 @dataclass
 class TTSConfig:
+    backend: str = "local"  # "local" (Qwen3-TTS) or "elevenlabs" (cloud)
     voice: str = "Ryan"
     device: str = "cuda"
     voices_dir: str = "voices"
+    # ElevenLabs-specific (only used when backend="elevenlabs")
+    elevenlabs_api_key: str = ""
+    elevenlabs_voice_id: str = ""
+    elevenlabs_model_id: str = "eleven_flash_v2_5"
 
 
 @dataclass
@@ -67,9 +72,13 @@ class Config:
                 compute_type=os.getenv("WHISPER_COMPUTE_TYPE", "float16"),
             ),
             tts=TTSConfig(
+                backend=os.getenv("TTS_BACKEND", "local"),
                 voice=os.getenv("TTS_VOICE", "Ryan"),
                 device=os.getenv("TTS_DEVICE", "cuda"),
                 voices_dir=os.getenv("TTS_VOICES_DIR", "voices"),
+                elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY", ""),
+                elevenlabs_voice_id=os.getenv("ELEVENLABS_VOICE_ID", ""),
+                elevenlabs_model_id=os.getenv("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5"),
             ),
             vad=VADConfig(
                 silence_duration_ms=int(os.getenv("SILENCE_DURATION_MS", "1500")),
@@ -84,4 +93,12 @@ class Config:
         errors = []
         if not self.discord_token:
             errors.append("DISCORD_TOKEN is required")
+        if self.tts.backend not in ("local", "elevenlabs"):
+            errors.append(
+                f"TTS_BACKEND must be 'local' or 'elevenlabs', got '{self.tts.backend}'"
+            )
+        if self.tts.backend == "elevenlabs" and not self.tts.elevenlabs_api_key:
+            errors.append("ELEVENLABS_API_KEY is required when TTS_BACKEND=elevenlabs")
+        if self.tts.backend == "elevenlabs" and not self.tts.elevenlabs_voice_id:
+            errors.append("ELEVENLABS_VOICE_ID is required when TTS_BACKEND=elevenlabs")
         return errors

@@ -37,8 +37,7 @@ from server.call_manager import CallManager
 from server.config import Config
 from server.discord_bot import BotRunner
 from server.stt_pipeline import STTPipeline
-from server.tts_engine import TTSEngine
-from server.voice_profile import VoiceProfileRegistry
+from server.tts_backend import TTSBackend
 
 # ---------------------------------------------------------------------------
 # Logging — stderr only; stdout is owned by the MCP stdio transport
@@ -300,6 +299,30 @@ def _load_and_validate_config() -> Config:
     return config
 
 
+def _create_tts_engine(config: Config) -> TTSBackend:
+    """Factory: create the appropriate TTS backend based on config."""
+    if config.tts.backend == "elevenlabs":
+        from server.elevenlabs_tts import ElevenLabsTTSEngine  # noqa: PLC0415
+
+        return ElevenLabsTTSEngine(
+            api_key=config.tts.elevenlabs_api_key,
+            voice_id=config.tts.elevenlabs_voice_id,
+            model_id=config.tts.elevenlabs_model_id,
+        )
+
+    # Default: local Qwen3-TTS
+    from server.tts_engine import TTSEngine  # noqa: PLC0415
+    from server.voice_profile import VoiceProfileRegistry  # noqa: PLC0415
+
+    registry = VoiceProfileRegistry(config.tts)
+    log.info(
+        "Voice profile registry: %d profiles (%s)",
+        len(registry.list_profiles()),
+        ", ".join(p.name for p in registry.list_profiles()),
+    )
+    return TTSEngine(config.tts, registry)
+
+
 async def run() -> None:
     """Initialise all components and run the MCP server until shutdown."""
     config = _load_and_validate_config()
@@ -318,17 +341,9 @@ async def run() -> None:
     bot_runner.bot.set_correction_manager(stt_pipeline.correction_manager)
     log.info("CorrectionManager wired into Discord bot")
 
-    # Create voice profile registry (discovers presets + custom clone profiles)
-    registry = VoiceProfileRegistry(config.tts)
-    log.info(
-        "Voice profile registry: %d profiles (%s)",
-        len(registry.list_profiles()),
-        ", ".join(p.name for p in registry.list_profiles()),
-    )
-
-    # Create shared TTS engine (Qwen3-TTS, lazy-loaded on first use)
-    tts_engine = TTSEngine(config.tts, registry)
-    log.info("TTS engine initialised (default voice=%s)", config.tts.voice)
+    # Create TTS engine (local Qwen3-TTS or ElevenLabs cloud)
+    tts_engine = _create_tts_engine(config)
+    log.info("TTS engine initialised (backend=%s)", config.tts.backend)
 
     if config.preload_models:
         log.info("Pre-loading models (PRELOAD_MODELS=true)...")

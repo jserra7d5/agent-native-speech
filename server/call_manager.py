@@ -16,10 +16,9 @@ from typing import Any
 import discord
 
 from server.audio_source import StreamingAudioSource, TTSAudioSource
-from server.tts_engine import _preprocess
+from server.tts_backend import TTSBackend, preprocess as _preprocess
 from server.discord_bot import BotRunner
 from server.stt_pipeline import STTPipeline
-from server.tts_engine import TTSEngine
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +60,7 @@ class CallManager:
         self,
         bot_runner: BotRunner,
         stt_pipeline: STTPipeline,
-        tts_engine: TTSEngine,
+        tts_engine: TTSBackend,
     ) -> None:
         """Initialise the manager.
 
