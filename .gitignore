@@ -2,9 +2,13 @@
 __pycache__/
 *.pyc
 .env
+.mcp.json
 data/corrections/*.json
-voices/*/prompt_cache.pt
 data/sessions/
+voices/*/prompt_cache.pt
+voices/*/reference.wav
 *.egg-info/
 dist/
 build/
+*.log
+/tmp/

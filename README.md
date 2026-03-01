@@ -1,8 +1,8 @@
 # agent-native-speech
 
-MCP server that lets AI agents call you on Discord voice channels. Built on the [CallMe](https://github.com/ZeframLou/call-me) pattern — same tool interface, but using Discord voice instead of phone calls and local GPU inference instead of cloud APIs.
+An MCP server that gives AI agents the ability to **call you on Discord** and have real voice conversations. The agent speaks via text-to-speech, listens via speech-to-text, and manages the full call lifecycle through MCP tools.
 
-## How it works
+Built for [Claude Code](https://claude.com/claude-code) and any MCP-compatible AI client.
 
 ```
 Claude Code (or any MCP client)
@@ -10,15 +10,13 @@ Claude Code (or any MCP client)
     │  stdio (MCP JSON-RPC)
     ▼
 MCP Server
-    ├── STT Pipeline: Silero VAD → Faster-Whisper → Claude Haiku correction
-    ├── TTS Engine: Qwen3-TTS (sentence-streaming playback)
+    ├── TTS: Qwen3-TTS local GPU  ─or─  ElevenLabs cloud API
+    ├── STT: Silero VAD → Faster-Whisper → Claude Haiku correction
     └── Discord Bot: discord.py + voice-recv (DAVE E2EE support)
             │
             ▼
     Discord Voice Channel
 ```
-
-The agent calls `initiate_call` to join a voice channel and speak an opening message. The bot speaks via TTS, listens for the user's reply via STT, and returns the corrected transcript. The agent continues the conversation with `continue_call` and ends with `end_call`.
 
 ## MCP Tools
 
@@ -31,74 +29,178 @@ The agent calls `initiate_call` to join a voice channel and speak an opening mes
 | `add_correction(wrong, right)` | Teach an STT word correction |
 | `list_corrections()` | List all stored corrections |
 
-## Setup
-
-### Prerequisites
+## Prerequisites
 
 - Python 3.10+
-- NVIDIA GPU with CUDA (recommended: 16GB+ VRAM for Whisper medium + Qwen3-TTS)
-- Discord bot with voice permissions
-- Anthropic API key (for STT correction)
+- NVIDIA GPU with CUDA (for local TTS/STT) — or use ElevenLabs cloud TTS
+- A [Discord bot](https://discord.com/developers/applications) with voice permissions
+- An [Anthropic API key](https://console.anthropic.com/) (for STT correction)
 
-### Installation
+## Quick Start
 
 ```bash
-git clone <repo-url>
-cd agent-native-speech
+git clone https://github.com/jserra7d5/agent-native-voice.git
+cd agent-native-voice
 python -m venv .venv
 source .venv/bin/activate
-
-# Core dependencies (STT + Discord)
-pip install -e .
-
-# TTS dependencies (Qwen3-TTS + FlashAttention)
 pip install -e '.[tts]'
-```
 
-### Configuration
-
-Copy `.env.example` and fill in your credentials:
-
-```bash
 cp .env.example .env
+# Edit .env: DISCORD_TOKEN, ANTHROPIC_API_KEY, DISCORD_CHANNEL_ID
 ```
 
-Required:
-- `DISCORD_TOKEN` — Discord bot token
-- `ANTHROPIC_API_KEY` — Anthropic API key
-
-Optional:
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DISCORD_CHANNEL_ID` | — | Default voice channel (overridable per call) |
-| `WHISPER_MODEL` | `base` | STT model: tiny/base/small/medium/large-v3 |
-| `WHISPER_DEVICE` | `cuda` | Whisper compute device |
-| `WHISPER_COMPUTE_TYPE` | `float16` | Whisper precision |
-| `TTS_VOICE` | `Ryan` | TTS speaker (Ryan, Aiden, Vivian, etc.) |
-| `TTS_DEVICE` | `cuda` | TTS compute device |
-| `SILENCE_DURATION_MS` | `1500` | Silence to end an utterance |
-| `VAD_THRESHOLD` | `0.5` | Voice detection sensitivity (0.0–1.0) |
-| `CORRECTION_MODEL` | `claude-haiku-4-5-20251001` | LLM for transcript correction |
-| `PRELOAD_MODELS` | `false` | Pre-load models at startup for lower first-call latency |
-
-### Running
+Run:
 
 ```bash
 source .venv/bin/activate
 python -m server.main
 ```
 
-The server communicates over stdio using MCP JSON-RPC. All logging goes to stderr.
-
-### Claude Code Integration
-
-Add as an MCP server:
+Or add as an MCP server in Claude Code:
 
 ```bash
 claude mcp add voice-agent python -m server.main
 ```
 
-Or install the plugin from the project directory (uses `.claude-plugin/plugin.json`).
+## Text-to-Speech Backends
+
+Select a backend via `TTS_BACKEND` in `.env`.
+
+### Local: Qwen3-TTS (default)
+
+Uses [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) on your GPU. No API costs, full privacy. Supports both preset voices and custom voice cloning.
+
+```bash
+TTS_BACKEND=local
+TTS_VOICE=Ryan          # Preset or custom voice profile name
+TTS_DEVICE=cuda
+```
+
+**Preset voices** (no setup needed): `Ryan`, `Aiden` (English), `Vivian`, `Serena`, `Uncle_Fu`, `Dylan`, `Eric` (Chinese), `Ono_Anna` (Japanese), `Sohee` (Korean).
+
+### Cloud: ElevenLabs
+
+Uses the [ElevenLabs API](https://elevenlabs.io/) for high-quality cloud TTS. No GPU needed for speech — frees VRAM for a larger Whisper model.
+
+```bash
+TTS_BACKEND=elevenlabs
+ELEVENLABS_API_KEY=your-api-key
+ELEVENLABS_VOICE_ID=your-voice-id        # From ElevenLabs dashboard
+ELEVENLABS_MODEL_ID=eleven_flash_v2_5    # eleven_flash_v2_5 (fast) or eleven_v3 (quality)
+```
+
+## Custom Voice Cloning (Local)
+
+Clone any voice from a short reference audio clip using the Qwen3-TTS Base model. Create character voices, impressions, or clone your own voice.
+
+### What You Need
+
+- **3-30 seconds** of clean reference audio (WAV, mono preferred)
+- An accurate **transcript** of what's spoken in the audio
+- Minimal background noise, music, or reverb
+
+### Step by Step
+
+**1. Create a voice profile directory:**
+
+```bash
+mkdir -p voices/my_voice
+```
+
+**2. Add reference audio** as `reference.wav`. For best results, use 10-30 seconds of a single speaker with consistent tone. Concatenate multiple clips if needed:
+
+```bash
+ffmpeg -i clip1.wav -i clip2.wav -i clip3.wav \
+  -filter_complex "[0][1][2]concat=n=3:v=0:a=1" \
+  voices/my_voice/reference.wav
+```
+
+**3. Create `voices/my_voice/profile.json`:**
+
+```json
+{
+  "name": "my_voice",
+  "display_name": "My Custom Voice",
+  "type": "clone",
+  "language": "English",
+  "ref_audio": "reference.wav",
+  "ref_text": "The exact words spoken in the reference audio, transcribed accurately.",
+  "x_vector_only": false
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `name` | Must match directory name |
+| `type` | Must be `"clone"` |
+| `language` | `"English"`, `"Chinese"`, `"Japanese"`, or `"Korean"` |
+| `ref_audio` | Reference WAV filename (relative to profile directory) |
+| `ref_text` | Exact transcript of the reference audio |
+| `x_vector_only` | `false` = best quality, `true` = faster but lower quality |
+
+**4. Set `TTS_VOICE=my_voice` in `.env` and start the server.**
+
+On first use, the model extracts a voice clone prompt and caches it to `prompt_cache.pt`. Subsequent startups skip extraction.
+
+### Tips for Better Clones
+
+- **One speaker per profile** — don't mix voices in reference audio
+- **Accurate transcripts matter** — the model uses them to align speech features
+- **Iterate** — try different reference clips if the clone sounds off
+- **Temperature tuning** — edit `CLONE_GENERATE_KWARGS` in `server/tts_engine.py` to adjust creativity vs. stability (default `0.3` for consistency)
+
+### Example: 343 Guilty Spark
+
+The repo includes a sample profile at `voices/guilty_spark/profile.json` for 343 Guilty Spark from Halo CE. Add your own `reference.wav` with dialogue and set `TTS_VOICE=guilty_spark`.
+
+## Speech-to-Text
+
+Uses [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) with [Silero VAD](https://github.com/snakers4/silero-vad) for voice activity detection. Transcripts are post-corrected by Claude Haiku to fix common mishearings.
+
+```bash
+WHISPER_MODEL=medium        # tiny, base, small, medium, large-v3
+WHISPER_DEVICE=cuda
+WHISPER_COMPUTE_TYPE=float16
+```
+
+### STT Corrections
+
+When Whisper consistently mishears a word, teach it via MCP tool or Discord slash command:
+
+```
+/correct "Klode" "Claude"
+/correct "eye dent" "ident"
+```
+
+Corrections are stored per user (`data/corrections/{user_id}.json`) and applied via Claude Haiku for context-aware substitution.
+
+## Configuration Reference
+
+See [`.env.example`](.env.example) for the full list.
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DISCORD_TOKEN` | Yes | — | Discord bot token |
+| `ANTHROPIC_API_KEY` | Yes | — | For STT post-correction |
+| `DISCORD_CHANNEL_ID` | No | — | Default voice channel |
+| `TTS_BACKEND` | No | `local` | `local` or `elevenlabs` |
+| `TTS_VOICE` | No | `Ryan` | Voice profile name |
+| `WHISPER_MODEL` | No | `base` | Whisper model size |
+| `SILENCE_DURATION_MS` | No | `1500` | Silence to end utterance (ms) |
+| `VAD_THRESHOLD` | No | `0.5` | Voice detection sensitivity |
+| `PRELOAD_MODELS` | No | `false` | Pre-load models at startup |
+
+## VRAM Requirements
+
+| Component | VRAM |
+|-----------|------|
+| Whisper `base` | ~1 GB |
+| Whisper `medium` | ~5 GB |
+| Whisper `large-v3` | ~10 GB |
+| Qwen3-TTS (one model) | ~4-5 GB |
+| **Typical (medium + TTS)** | **~10 GB** |
+
+Using ElevenLabs eliminates TTS VRAM entirely, allowing a larger Whisper model on the same GPU.
 
 ## Architecture
 
@@ -106,57 +208,25 @@ Or install the plugin from the project directory (uses `.claude-plugin/plugin.js
 server/
 ├── main.py              # MCP server entry point (stdio transport)
 ├── config.py            # Environment-based configuration
-├── discord_bot.py       # Discord bot + voice channel management
+├── tts_backend.py       # TTSBackend protocol + shared text preprocessing
+├── tts_engine.py        # Local Qwen3-TTS (preset + voice cloning)
+├── elevenlabs_tts.py    # ElevenLabs cloud TTS backend
+├── voice_profile.py     # Voice profile registry (presets + clone profiles)
 ├── call_manager.py      # Session lifecycle, bridges MCP ↔ Discord
+├── discord_bot.py       # Discord bot + voice channel management
 ├── stt_pipeline.py      # Orchestrates: AudioSink → VAD → Whisper → correction
 ├── audio_sink.py        # Receives Discord audio, resamples 48kHz→16kHz
+├── audio_source.py      # Converts TTS audio → Discord PCM playback
 ├── vad.py               # Silero VAD streaming speech detection
-├── transcriber.py       # Faster-Whisper transcription with vocab biasing
-├── correction.py        # Per-user correction dictionaries + Claude Haiku
-├── tts_engine.py        # Qwen3-TTS synthesis with sentence chunking
-└── audio_source.py      # Converts TTS audio → Discord PCM playback
+├── transcriber.py       # Faster-Whisper transcription
+└── correction.py        # Per-user correction dictionaries + Claude Haiku
 ```
 
-**Threading model**: MCP server runs in the main asyncio thread (owns stdio). Discord bot runs in a background daemon thread with its own event loop. `BotRunner.run_coroutine()` bridges them via `asyncio.run_coroutine_threadsafe`.
+**Threading model**: MCP server runs in the main asyncio thread (owns stdio). Discord bot runs in a background daemon thread with its own event loop. `BotRunner.run_coroutine()` bridges them.
 
 **Audio pipeline**:
-- **Receive**: Discord 48kHz stereo PCM → resample to 16kHz mono float32 → Silero VAD (512-sample windows) → Faster-Whisper → Claude Haiku correction
-- **Playback**: Qwen3-TTS 24kHz mono float32 → resample to 48kHz stereo int16 → Discord voice. Multi-sentence messages use streaming playback (first sentence plays while rest synthesizes).
-
-## Discord Slash Commands
-
-The bot also registers Discord slash commands:
-
-- `/correct wrong right` — Add an STT correction for your user
-- `/corrections` — List your stored corrections
-
-## STT Correction System
-
-The correction system learns per-user vocabulary over time. When Whisper consistently mishears a word (names, technical terms, etc.), add a correction:
-
-```
-/correct "Klode" "Claude"
-/correct "eye dent" "ident"
-```
-
-Corrections are:
-- Stored as JSON files per user (`data/corrections/{user_id}.json`)
-- Applied via Claude Haiku for context-aware substitution
-- Used to bias Whisper's `initial_prompt` for better first-pass recognition
-
-## GPU Memory
-
-| Component | Approximate VRAM |
-|-----------|-----------------|
-| Whisper tiny | ~1 GB |
-| Whisper base | ~1 GB |
-| Whisper small | ~2 GB |
-| Whisper medium | ~5 GB |
-| Whisper large-v3 | ~10 GB |
-| Qwen3-TTS 1.7B | ~4–7 GB |
-| Silero VAD | CPU only |
-
-Recommended: Whisper medium + Qwen3-TTS on a 16GB GPU (~12 GB total).
+- **Receive**: Discord 48kHz stereo → resample 16kHz mono → Silero VAD → Faster-Whisper → Haiku correction
+- **Playback**: TTS 24kHz mono float32 → resample 48kHz stereo int16 → Discord voice. Multi-sentence messages use streaming playback.
 
 ## License
 
