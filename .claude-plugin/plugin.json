@@ -1,0 +1,63 @@
+{
+  "name": "agent-native-speech",
+  "display_name": "Discord Voice Agent",
+  "description": "Talk to your AI agent over Discord voice channels. Provides voice call tools for initiating conversations, speaking, and listening via STT/TTS with automatic word correction.",
+  "mcp_server": {
+    "command": "python",
+    "args": ["-m", "server.main"],
+    "env": {
+      "DISCORD_TOKEN": {
+        "description": "Discord bot token for authentication",
+        "required": true
+      },
+      "ANTHROPIC_API_KEY": {
+        "description": "Anthropic API key for STT word correction",
+        "required": true
+      },
+      "DISCORD_CHANNEL_ID": {
+        "description": "Default Discord voice channel ID to join (can be overridden per call)",
+        "required": false
+      },
+      "WHISPER_MODEL": {
+        "description": "Whisper STT model size (tiny/base/small/medium/large-v3)",
+        "required": false,
+        "default": "base"
+      },
+      "WHISPER_DEVICE": {
+        "description": "Compute device for Whisper (cuda or cpu)",
+        "required": false,
+        "default": "cuda"
+      },
+      "WHISPER_COMPUTE_TYPE": {
+        "description": "Compute type for Whisper (float16 or float32)",
+        "required": false,
+        "default": "float16"
+      },
+      "TTS_VOICE": {
+        "description": "TTS speaker voice name",
+        "required": false,
+        "default": "Ryan"
+      },
+      "TTS_DEVICE": {
+        "description": "Compute device for TTS (cuda or cpu)",
+        "required": false,
+        "default": "cuda"
+      },
+      "SILENCE_DURATION_MS": {
+        "description": "Silence duration in milliseconds to end user utterance (VAD)",
+        "required": false,
+        "default": "1500"
+      },
+      "VAD_THRESHOLD": {
+        "description": "Voice Activity Detection probability threshold (0.0-1.0)",
+        "required": false,
+        "default": "0.5"
+      },
+      "CORRECTION_MODEL": {
+        "description": "Claude model for STT word correction",
+        "required": false,
+        "default": "claude-haiku-4-5-20251001"
+      }
+    }
+  }
+}
