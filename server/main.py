@@ -38,6 +38,7 @@ from server.config import Config
 from server.discord_bot import BotRunner
 from server.stt_pipeline import STTPipeline
 from server.tts_engine import TTSEngine
+from server.voice_profile import VoiceProfileRegistry
 
 # ---------------------------------------------------------------------------
 # Logging — stderr only; stdout is owned by the MCP stdio transport
@@ -317,9 +318,17 @@ async def run() -> None:
     bot_runner.bot.set_correction_manager(stt_pipeline.correction_manager)
     log.info("CorrectionManager wired into Discord bot")
 
+    # Create voice profile registry (discovers presets + custom clone profiles)
+    registry = VoiceProfileRegistry(config.tts)
+    log.info(
+        "Voice profile registry: %d profiles (%s)",
+        len(registry.list_profiles()),
+        ", ".join(p.name for p in registry.list_profiles()),
+    )
+
     # Create shared TTS engine (Qwen3-TTS, lazy-loaded on first use)
-    tts_engine = TTSEngine(config.tts)
-    log.info("TTS engine initialised")
+    tts_engine = TTSEngine(config.tts, registry)
+    log.info("TTS engine initialised (default voice=%s)", config.tts.voice)
 
     if config.preload_models:
         log.info("Pre-loading models (PRELOAD_MODELS=true)...")

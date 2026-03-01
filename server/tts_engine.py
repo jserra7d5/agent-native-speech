@@ -1,8 +1,8 @@
-"""Text-to-speech synthesis using Qwen3-TTS (CustomVoice).
+"""Text-to-speech synthesis using Qwen3-TTS.
 
-Wraps the ``qwen-tts`` library to synthesise speech from text on a local GPU.
-The model is loaded lazily on the first call to :meth:`TTSEngine.synthesize` so
-that server startup is not blocked by the heavy CUDA initialisation.
+Supports two modes:
+  - **Preset voices** via the CustomVoice model (Ryan, Aiden, etc.)
+  - **Voice cloning** via the Base model (clone any voice from reference audio)
 
 The engine produces raw float32 mono audio at 24 kHz, which can be fed directly
 into :meth:`server.audio_source.TTSAudioSource.from_audio` for Discord playback.
@@ -14,9 +14,11 @@ Dependencies (install via ``pip install '.[tts]'``):
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
-from typing import TYPE_CHECKING, Iterator
+from pathlib import Path
+from typing import Any, TYPE_CHECKING, Iterator
 
 import numpy as np
 
@@ -24,6 +26,7 @@ if TYPE_CHECKING:
     from qwen_tts import Qwen3TTSModel
 
 from server.config import TTSConfig
+from server.voice_profile import AVAILABLE_SPEAKERS, VoiceProfile, VoiceProfileRegistry
 
 log = logging.getLogger(__name__)
 
@@ -34,23 +37,9 @@ log = logging.getLogger(__name__)
 #: Native output sample rate of Qwen3-TTS (Hz).
 OUTPUT_SAMPLE_RATE: int = 24_000
 
-#: HuggingFace model ID for the 1.7B CustomVoice variant (has predefined
-#: speakers including "Ryan", "Aiden", "Vivian", etc.).
-MODEL_ID: str = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
-
-#: Speakers available in the CustomVoice model.
-#: Each entry is (speaker_name, native_language).
-AVAILABLE_SPEAKERS: dict[str, str] = {
-    "Vivian": "Chinese",
-    "Serena": "Chinese",
-    "Uncle_Fu": "Chinese",
-    "Dylan": "Chinese",
-    "Eric": "Chinese",
-    "Ryan": "English",
-    "Aiden": "English",
-    "Ono_Anna": "Japanese",
-    "Sohee": "Korean",
-}
+#: HuggingFace model IDs.
+CUSTOM_VOICE_MODEL_ID: str = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+BASE_MODEL_ID: str = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 
 #: Regex that matches fenced code blocks (```...```) with optional language tag.
 _CODE_BLOCK_RE: re.Pattern[str] = re.compile(
@@ -147,23 +136,24 @@ def _preprocess(text: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 class TTSEngine:
-    """Synthesises speech from text using a Qwen3-TTS CustomVoice model.
+    """Synthesises speech from text using Qwen3-TTS models.
 
-    The model is **not** loaded at construction time -- it is initialised on
-    the first call to :meth:`synthesize` to avoid blocking server startup
-    with slow CUDA initialisation and large weight downloads.
-
-    Parameters
-    ----------
-    config:
-        TTS configuration.  ``config.voice`` selects the speaker preset
-        (default ``"Ryan"``).  ``config.device`` selects the PyTorch device
-        (default ``"cuda"``).
+    Supports both preset speakers (CustomVoice model) and voice cloning
+    (Base model).  Models are loaded lazily on first use.  Only one TTS
+    model is kept in VRAM at a time (mutual exclusion) to stay within
+    the GPU memory budget.
     """
 
-    def __init__(self, config: TTSConfig) -> None:
+    def __init__(self, config: TTSConfig, registry: VoiceProfileRegistry) -> None:
         self._config = config
-        self._model: Qwen3TTSModel | None = None
+        self._registry = registry
+
+        # Models (mutually exclusive — only one loaded at a time)
+        self._custom_voice_model: Qwen3TTSModel | None = None
+        self._base_model: Qwen3TTSModel | None = None
+
+        # Voice clone prompt cache: profile name -> prompt items
+        self._prompt_cache: dict[str, Any] = {}
 
         log.debug(
             "TTSEngine created (voice=%s device=%s) -- "
@@ -178,8 +168,8 @@ class TTSEngine:
 
     @property
     def is_loaded(self) -> bool:
-        """Return ``True`` if the TTS model is currently in memory."""
-        return self._model is not None
+        """Return ``True`` if any TTS model is currently in memory."""
+        return self._custom_voice_model is not None or self._base_model is not None
 
     def synthesize(
         self,
@@ -195,8 +185,8 @@ class TTSEngine:
             automatically; long text is split into sentence-sized chunks
             and the resulting audio arrays are concatenated.
         voice:
-            Speaker name override.  If ``None``, falls back to the default
-            voice configured in :class:`TTSConfig` (``"Ryan"``).
+            Voice profile name override.  If ``None``, falls back to the
+            default voice configured in :class:`TTSConfig`.
 
         Returns
         -------
@@ -204,24 +194,8 @@ class TTSEngine:
             A ``(audio, sample_rate)`` pair where *audio* is a 1-D
             ``float32`` NumPy array and *sample_rate* is always
             :data:`OUTPUT_SAMPLE_RATE` (24 000 Hz).
-
-        Raises
-        ------
-        ValueError
-            If the text is empty after preprocessing or the requested
-            speaker is not available.
-        RuntimeError
-            If the ``qwen-tts`` package is not installed or model loading
-            fails.
         """
-        speaker = voice or self._config.voice
-
-        if speaker not in AVAILABLE_SPEAKERS:
-            available = ", ".join(sorted(AVAILABLE_SPEAKERS))
-            raise ValueError(
-                f"Unknown speaker {speaker!r}. "
-                f"Available speakers: {available}"
-            )
+        profile = self._resolve_profile(voice)
 
         chunks = _preprocess(text)
         if not chunks:
@@ -229,12 +203,13 @@ class TTSEngine:
                 "Nothing to synthesize: text is empty after preprocessing"
             )
 
-        model = self._get_or_load_model()
+        model = self._get_model_for_profile(profile)
 
         log.debug(
-            "Synthesizing %d chunk(s) with speaker=%s",
+            "Synthesizing %d chunk(s) with voice=%s (%s)",
             len(chunks),
-            speaker,
+            profile.name,
+            profile.profile_type,
         )
 
         audio_segments: list[np.ndarray] = []
@@ -249,15 +224,8 @@ class TTSEngine:
             )
 
             try:
-                wavs, sr = model.generate_custom_voice(
-                    text=chunk,
-                    language="English",
-                    speaker=speaker,
-                )
+                segment = self._synthesize_chunk(chunk, profile, model)
             except Exception as exc:
-                # Detect torch.cuda.OutOfMemoryError without requiring a
-                # top-level torch import (torch may not be installed in all
-                # environments).
                 if type(exc).__name__ == "OutOfMemoryError":
                     log.error(
                         "GPU OOM during TTS synthesis; unloading model and clearing cache"
@@ -269,8 +237,6 @@ class TTSEngine:
                     ) from None
                 raise
 
-            # wavs is a list; take the first (and only) result.
-            segment = np.asarray(wavs[0], dtype=np.float32)
             audio_segments.append(segment)
 
         # Concatenate all chunks into a single contiguous array.
@@ -302,48 +268,20 @@ class TTSEngine:
         begin playing the first yielded segment while synthesis of subsequent
         chunks continues, dramatically reducing time-to-first-audio for long
         messages.
-
-        Parameters
-        ----------
-        text:
-            The text to speak.  Same preprocessing as :meth:`synthesize`
-            (code-fence stripping, whitespace normalisation, sentence splitting).
-        voice:
-            Speaker name override.  If ``None``, falls back to the default
-            voice configured in :class:`TTSConfig` (``"Ryan"``).
-
-        Yields
-        ------
-        tuple[np.ndarray, int]
-            ``(audio, sample_rate)`` pairs where *audio* is a 1-D ``float32``
-            NumPy array and *sample_rate* is always :data:`OUTPUT_SAMPLE_RATE`.
-
-        Raises
-        ------
-        ValueError
-            If the requested speaker is not available.
-        RuntimeError
-            If the ``qwen-tts`` package is not installed or model loading fails.
         """
-        speaker = voice or self._config.voice
-
-        if speaker not in AVAILABLE_SPEAKERS:
-            available = ", ".join(sorted(AVAILABLE_SPEAKERS))
-            raise ValueError(
-                f"Unknown speaker {speaker!r}. "
-                f"Available speakers: {available}"
-            )
+        profile = self._resolve_profile(voice)
 
         chunks = _preprocess(text)
         if not chunks:
             return
 
-        model = self._get_or_load_model()
+        model = self._get_model_for_profile(profile)
 
         log.debug(
-            "synthesize_streamed: %d chunk(s) with speaker=%s",
+            "synthesize_streamed: %d chunk(s) with voice=%s (%s)",
             len(chunks),
-            speaker,
+            profile.name,
+            profile.profile_type,
         )
 
         for i, chunk in enumerate(chunks):
@@ -356,11 +294,7 @@ class TTSEngine:
             )
 
             try:
-                wavs, sr = model.generate_custom_voice(
-                    text=chunk,
-                    language="English",
-                    speaker=speaker,
-                )
+                segment = self._synthesize_chunk(chunk, profile, model)
             except Exception as exc:
                 if type(exc).__name__ == "OutOfMemoryError":
                     log.error(
@@ -373,7 +307,6 @@ class TTSEngine:
                     ) from None
                 raise
 
-            segment = np.asarray(wavs[0], dtype=np.float32)
             log.debug(
                 "  chunk %d/%d yielded: %.3f s (%d samples)",
                 i + 1,
@@ -384,54 +317,96 @@ class TTSEngine:
             yield segment, OUTPUT_SAMPLE_RATE
 
     def warmup(self) -> None:
-        """Pre-load the model and run a dummy synthesis to prime CUDA."""
+        """Pre-load the model for the default voice and run a dummy synthesis."""
         import time
         start = time.monotonic()
-        self._get_or_load_model()
+
+        profile = self._resolve_profile(None)
+        self._get_model_for_profile(profile)
+
+        # Pre-extract voice clone prompt if the default voice is a clone
+        if profile.profile_type == "clone":
+            self._get_or_create_prompt(profile)
+
         # Run a short dummy synthesis to warm the pipeline
         self.synthesize("Hello.")
         elapsed = time.monotonic() - start
-        log.info("TTS warmup complete in %.2f s", elapsed)
+        log.info("TTS warmup complete in %.2f s (voice=%s)", elapsed, profile.name)
 
     def unload(self) -> None:
-        """Release the TTS model and free GPU memory.
+        """Release all TTS models and free GPU memory.
 
-        Safe to call even if the model was never loaded.  After this call
-        :attr:`is_loaded` returns ``False`` and the next :meth:`synthesize`
-        call will reload the model.
+        Safe to call even if no model was ever loaded.
         """
-        if self._model is None:
-            log.debug("unload() called but model was not loaded; no-op")
-            return
+        unloaded = False
 
-        log.info("Unloading Qwen3-TTS model (device=%s)", self._config.device)
+        if self._custom_voice_model is not None:
+            log.info("Unloading CustomVoice model")
+            del self._custom_voice_model
+            self._custom_voice_model = None
+            unloaded = True
 
-        del self._model
-        self._model = None
+        if self._base_model is not None:
+            log.info("Unloading Base model")
+            del self._base_model
+            self._base_model = None
+            unloaded = True
 
+        if unloaded:
+            self._clear_cuda_cache()
+        else:
+            log.debug("unload() called but no model was loaded; no-op")
+
+    # ------------------------------------------------------------------
+    # Private: profile resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_profile(self, voice: str | None) -> VoiceProfile:
+        """Look up a voice profile by name, falling back to the configured default."""
+        name = voice or self._config.voice
         try:
-            import torch  # noqa: PLC0415
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                log.debug("CUDA cache cleared after model unload")
-        except ImportError:
-            pass
+            return self._registry.get(name)
+        except KeyError:
+            available = ", ".join(p.name for p in self._registry.list_profiles())
+            raise ValueError(
+                f"Unknown voice {name!r}. Available voices: {available}"
+            ) from None
 
     # ------------------------------------------------------------------
-    # Private helpers
+    # Private: model management (mutual exclusion)
     # ------------------------------------------------------------------
 
-    def _get_or_load_model(self) -> "Qwen3TTSModel":
-        """Return the cached model, loading it on first access."""
-        if self._model is not None:
-            return self._model
+    def _get_model_for_profile(self, profile: VoiceProfile) -> "Qwen3TTSModel":
+        """Return the appropriate model for *profile*, loading it if needed.
 
-        log.info(
-            "Loading Qwen3-TTS model '%s' on %s ...",
-            MODEL_ID,
-            self._config.device,
-        )
+        Implements mutual exclusion: loading one model type unloads the other.
+        """
+        if profile.profile_type == "preset":
+            if self._custom_voice_model is not None:
+                return self._custom_voice_model
+            # Unload Base model to free VRAM
+            if self._base_model is not None:
+                log.info("Unloading Base model to make room for CustomVoice")
+                del self._base_model
+                self._base_model = None
+                self._clear_cuda_cache()
+            self._custom_voice_model = self._load_model(CUSTOM_VOICE_MODEL_ID)
+            return self._custom_voice_model
+        else:
+            if self._base_model is not None:
+                return self._base_model
+            # Unload CustomVoice model to free VRAM
+            if self._custom_voice_model is not None:
+                log.info("Unloading CustomVoice model to make room for Base")
+                del self._custom_voice_model
+                self._custom_voice_model = None
+                self._clear_cuda_cache()
+            self._base_model = self._load_model(BASE_MODEL_ID)
+            return self._base_model
+
+    def _load_model(self, model_id: str) -> "Qwen3TTSModel":
+        """Load a Qwen3-TTS model from HuggingFace."""
+        log.info("Loading Qwen3-TTS model '%s' on %s ...", model_id, self._config.device)
 
         try:
             import torch  # noqa: PLC0415
@@ -446,22 +421,16 @@ class TTSEngine:
         # fall back to float16 otherwise.
         if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
             dtype = torch.bfloat16
-            log.debug("Using bfloat16 (GPU supports it)")
         else:
             dtype = torch.float16
-            log.debug("Falling back to float16")
 
         # Determine attention implementation.
         attn_impl: str | None = None
         try:
             import flash_attn  # noqa: F401, PLC0415
             attn_impl = "flash_attention_2"
-            log.debug("FlashAttention 2 available; using it")
         except ImportError:
-            log.debug(
-                "FlashAttention 2 not installed; "
-                "using default attention implementation"
-            )
+            pass
 
         kwargs: dict = {
             "device_map": self._config.device,
@@ -470,7 +439,112 @@ class TTSEngine:
         if attn_impl is not None:
             kwargs["attn_implementation"] = attn_impl
 
-        self._model = Qwen3TTSModel.from_pretrained(MODEL_ID, **kwargs)
+        model = Qwen3TTSModel.from_pretrained(model_id, **kwargs)
+        log.info("Qwen3-TTS model '%s' loaded successfully", model_id)
+        return model
 
-        log.info("Qwen3-TTS model loaded successfully")
-        return self._model
+    @staticmethod
+    def _clear_cuda_cache() -> None:
+        """Free GPU memory after model unload."""
+        try:
+            import torch  # noqa: PLC0415
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                log.debug("CUDA cache cleared")
+        except ImportError:
+            pass
+
+    # ------------------------------------------------------------------
+    # Private: voice clone prompt caching
+    # ------------------------------------------------------------------
+
+    def _get_or_create_prompt(self, profile: VoiceProfile) -> Any:
+        """Return cached voice clone prompt for *profile*, creating it if needed.
+
+        Checks: memory cache -> disk cache -> extract from model.
+        """
+        # Memory cache
+        if profile.name in self._prompt_cache:
+            return self._prompt_cache[profile.name]
+
+        cache_path = self._prompt_cache_path(profile)
+        profile_hash = self._profile_hash(profile)
+
+        # Disk cache
+        if cache_path is not None and cache_path.exists():
+            try:
+                import torch  # noqa: PLC0415
+                cached = torch.load(cache_path, map_location="cpu", weights_only=False)
+                if cached.get("profile_hash") == profile_hash:
+                    prompt = cached["items"]
+                    self._prompt_cache[profile.name] = prompt
+                    log.info("Loaded voice clone prompt from disk cache for %s", profile.name)
+                    return prompt
+                else:
+                    log.info("Disk cache stale for %s, re-extracting", profile.name)
+            except Exception:
+                log.warning("Failed to load prompt cache for %s", profile.name, exc_info=True)
+
+        # Extract from model
+        model = self._get_model_for_profile(profile)
+        log.info("Extracting voice clone prompt for %s from %s ...", profile.name, profile.ref_audio_path)
+
+        prompt = model.create_voice_clone_prompt(
+            ref_audio=str(profile.ref_audio_path),
+            ref_text=profile.ref_text or "",
+            x_vector_only_mode=profile.x_vector_only,
+        )
+
+        self._prompt_cache[profile.name] = prompt
+
+        # Save to disk
+        if cache_path is not None:
+            try:
+                import torch  # noqa: PLC0415
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                torch.save({"items": prompt, "profile_hash": profile_hash}, cache_path)
+                log.info("Saved voice clone prompt cache to %s", cache_path)
+            except Exception:
+                log.warning("Failed to save prompt cache for %s", profile.name, exc_info=True)
+
+        return prompt
+
+    @staticmethod
+    def _prompt_cache_path(profile: VoiceProfile) -> Path | None:
+        """Return the disk cache path for a clone profile's prompt, or None."""
+        if profile.ref_audio_path is None:
+            return None
+        return profile.ref_audio_path.parent / "prompt_cache.pt"
+
+    @staticmethod
+    def _profile_hash(profile: VoiceProfile) -> str:
+        """Compute a hash of the profile's clone-relevant fields for cache invalidation."""
+        data = f"{profile.ref_audio_path}|{profile.ref_text}|{profile.x_vector_only}"
+        return hashlib.sha256(data.encode()).hexdigest()[:16]
+
+    # ------------------------------------------------------------------
+    # Private: synthesis dispatch
+    # ------------------------------------------------------------------
+
+    def _synthesize_chunk(
+        self,
+        chunk: str,
+        profile: VoiceProfile,
+        model: "Qwen3TTSModel",
+    ) -> np.ndarray:
+        """Synthesise a single text chunk using the appropriate model API."""
+        if profile.profile_type == "preset":
+            wavs, _sr = model.generate_custom_voice(
+                text=chunk,
+                language=profile.language,
+                speaker=profile.speaker,
+            )
+        else:
+            prompt = self._get_or_create_prompt(profile)
+            wavs, _sr = model.generate_voice_clone(
+                text=chunk,
+                language=profile.language,
+                voice_clone_prompt=prompt,
+            )
+
+        return np.asarray(wavs[0], dtype=np.float32)

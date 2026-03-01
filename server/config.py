@@ -20,6 +20,7 @@ class STTConfig:
 class TTSConfig:
     voice: str = "Ryan"
     device: str = "cuda"
+    voices_dir: str = "voices"
 
 
 @dataclass
@@ -68,6 +69,7 @@ class Config:
             tts=TTSConfig(
                 voice=os.getenv("TTS_VOICE", "Ryan"),
                 device=os.getenv("TTS_DEVICE", "cuda"),
+                voices_dir=os.getenv("TTS_VOICES_DIR", "voices"),
             ),
             vad=VADConfig(
                 silence_duration_ms=int(os.getenv("SILENCE_DURATION_MS", "1500")),
