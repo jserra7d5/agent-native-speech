@@ -82,6 +82,4 @@ class Config:
         errors = []
         if not self.discord_token:
             errors.append("DISCORD_TOKEN is required")
-        if not self.anthropic_api_key:
-            errors.append("ANTHROPIC_API_KEY is required")
         return errors

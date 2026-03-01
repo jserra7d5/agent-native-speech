@@ -6,7 +6,6 @@ Discord's required format (48kHz stereo 16-bit PCM, 3840 bytes per 20ms frame).
 
 from __future__ import annotations
 
-import asyncio
 import collections
 import logging
 import threading
@@ -64,9 +63,9 @@ class TTSAudioSource(discord.AudioSource):
         self._offset: int = 0
         self._total_frames: int = len(pcm_bytes) // DISCORD_FRAME_BYTES
 
-        # Event is set when the last frame has been read, giving callers a
-        # clean way to await completion without polling the voice client.
-        self.done: asyncio.Event = asyncio.Event()
+        # Event is set when the last frame has been read.  Uses threading.Event
+        # because read() is called from Discord's audio thread, not the asyncio loop.
+        self.done: threading.Event = threading.Event()
 
         log.debug(
             "TTSAudioSource ready: %d bytes → %d frames (%.2f s)",
@@ -311,7 +310,7 @@ class StreamingAudioSource(discord.AudioSource):
         self._offset: int = 0
         self._finished: bool = False  # set by finish(); no more segments coming
         self._lock = threading.Lock()
-        self.done: asyncio.Event = asyncio.Event()
+        self.done: threading.Event = threading.Event()
 
         log.debug("StreamingAudioSource created")
 

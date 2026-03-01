@@ -74,12 +74,15 @@ class STTPipeline:
             The corrected transcript string, or an empty string if no speech
             was detected within the timeout.
         """
+        log.info("STT listen() called for user=%s (id=%s)", user, user_id)
         sink = UserAudioSink(target_user=user)
         self._vad.reset()
 
         # Attach the sink to the voice client
+        log.info("Attaching audio sink to voice client (type=%s)", type(voice_client).__name__)
         try:
             voice_client.listen(sink)
+            log.info("Audio sink attached successfully")
         except Exception:
             log.exception("Failed to attach audio sink — voice_recv may not be available")
             return ""
@@ -91,11 +94,25 @@ class STTPipeline:
             speech_audio = await self._wait_for_speech(sink, timeout_s, start_time)
         finally:
             # Always detach the sink
+            log.info("Detaching audio sink (elapsed=%.1fs, got_audio=%s)",
+                     time.monotonic() - start_time, speech_audio is not None)
             try:
                 voice_client.stop_listening()
             except Exception:
                 pass
             sink.cleanup()
+
+        # DEBUG: Always save received audio to a WAV file for analysis
+        if hasattr(self, '_debug_all_audio') and self._debug_all_audio is not None:
+            try:
+                import soundfile as sf
+                debug_path = "/tmp/voice-agent-debug.wav"
+                sf.write(debug_path, self._debug_all_audio, 16000)
+                log.info("DEBUG: Saved %d samples (%.2fs) of raw received audio to %s",
+                         len(self._debug_all_audio), len(self._debug_all_audio) / 16000, debug_path)
+            except Exception:
+                log.exception("Failed to save debug audio")
+            self._debug_all_audio = None
 
         if speech_audio is None or len(speech_audio) == 0:
             log.info("No speech detected within %.1fs timeout", timeout_s)
@@ -130,20 +147,66 @@ class STTPipeline:
         start_time: float,
     ) -> np.ndarray | None:
         """Poll the audio sink and VAD until a complete utterance is detected."""
-        while True:
-            elapsed = time.monotonic() - start_time
-            if elapsed >= timeout_s:
-                return None
+        poll_count = 0
+        audio_chunks_received = 0
+        total_samples = 0
+        debug_chunks: list[np.ndarray] = []
+        last_audio_time: float | None = None
+        # When Discord stops sending packets (user stops speaking), feed
+        # synthetic silence to the VAD so the silence counter can trigger.
+        _SILENCE_INJECT_DELAY_S = 0.3  # start injecting after 300ms of no audio
+        _SILENCE_CHUNK = np.zeros(512, dtype=np.float32)  # one VAD window of silence
+        try:
+            while True:
+                elapsed = time.monotonic() - start_time
+                if elapsed >= timeout_s:
+                    log.info("STT timeout after %.1fs (%d polls, %d audio chunks, %d total samples)",
+                             elapsed, poll_count, audio_chunks_received, total_samples)
+                    return None
 
-            # Drain whatever audio has accumulated in the sink
-            audio = sink.get_audio()
-            if audio is not None and len(audio) > 0:
-                event = self._vad.process_chunk(audio)
-                if event is not None and event.type == "end" and event.audio is not None:
-                    return event.audio
+                poll_count += 1
 
-            # Yield to the event loop
-            await asyncio.sleep(_POLL_INTERVAL_S)
+                # Drain whatever audio has accumulated in the sink
+                audio = sink.get_audio()
+                if audio is not None and len(audio) > 0:
+                    audio_chunks_received += 1
+                    total_samples += len(audio)
+                    last_audio_time = time.monotonic()
+                    debug_chunks.append(audio.copy())
+                    if audio_chunks_received <= 3 or audio_chunks_received % 20 == 0:
+                        log.debug("STT got audio chunk #%d: %d samples (%.3fs)",
+                                  audio_chunks_received, len(audio), len(audio) / 16000)
+                    event = self._vad.process_chunk(audio)
+                    if event is not None and event.type == "end" and event.audio is not None:
+                        log.info("VAD detected speech end after %.1fs (%d chunks)",
+                                 elapsed, audio_chunks_received)
+                        return event.audio
+                elif last_audio_time is not None:
+                    # No audio arrived this poll. If we're in the SPEAKING
+                    # state and enough time has passed, inject silence so the
+                    # VAD's silence counter can accumulate and trigger end.
+                    gap = time.monotonic() - last_audio_time
+                    if gap >= _SILENCE_INJECT_DELAY_S:
+                        event = self._vad.process_chunk(_SILENCE_CHUNK)
+                        if event is not None and event.type == "end" and event.audio is not None:
+                            log.info("VAD detected speech end (silence inject) after %.1fs (%d chunks)",
+                                     elapsed, audio_chunks_received)
+                            return event.audio
+
+                # Log periodically if no audio is arriving
+                if poll_count == 20:
+                    log.info("STT: 20 polls done, %d audio chunks received so far", audio_chunks_received)
+                elif poll_count == 100:
+                    log.info("STT: 100 polls done, %d audio chunks received so far", audio_chunks_received)
+
+                # Yield to the event loop
+                await asyncio.sleep(_POLL_INTERVAL_S)
+        finally:
+            # Always save debug audio (even on cancellation)
+            if debug_chunks:
+                self._debug_all_audio = np.concatenate(debug_chunks)
+                log.info("Saved %d debug audio chunks (%d total samples) for analysis",
+                         len(debug_chunks), total_samples)
 
     def warmup(self) -> None:
         """Pre-load and warm the Whisper model."""

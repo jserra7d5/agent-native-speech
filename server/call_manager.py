@@ -146,7 +146,9 @@ class CallManager:
             source = TTSAudioSource.from_audio(audio, sample_rate=sample_rate)
             try:
                 voice_client.play(source)
-                await source.done.wait()
+                # Poll threading.Event from the async loop
+                while not source.done.is_set():
+                    await asyncio.sleep(0.05)
                 log.debug("TTS playback complete (%.2f s)", source.duration_seconds)
             except discord.ClientException as exc:
                 log.error("Failed to play TTS audio (ClientException): %s", exc)
@@ -179,7 +181,9 @@ class CallManager:
         try:
             voice_client.play(source)
             # Wait for synthesis to finish and for all audio to be consumed.
-            await asyncio.gather(synth_future, source.done.wait())
+            await synth_future
+            while not source.done.is_set():
+                await asyncio.sleep(0.05)
             log.debug("Streaming TTS playback complete")
         except discord.ClientException as exc:
             log.error("Failed to play streaming TTS audio (ClientException): %s", exc)
@@ -322,7 +326,7 @@ class CallManager:
         session.conversation_history.append({"role": "assistant", "content": message})
         self._post_to_text_channel(session, "assistant", message)
 
-        # Listen for the user's reply (STT pipeline handles corrections internally)
+        # Listen for the user's reply
         transcript = await self._stt_listen(voice_client, session)
         session.conversation_history.append({"role": "user", "content": transcript})
         self._post_to_text_channel(session, "user", transcript)

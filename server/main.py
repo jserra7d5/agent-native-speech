@@ -30,8 +30,8 @@ import sys
 from typing import Any
 
 import mcp.server.stdio
-from mcp import types
-from mcp.server import InitializationOptions, NotificationOptions, Server
+from mcp.server import Server
+from mcp.types import Tool
 
 from server.call_manager import CallManager
 from server.config import Config
@@ -42,10 +42,14 @@ from server.tts_engine import TTSEngine
 # ---------------------------------------------------------------------------
 # Logging — stderr only; stdout is owned by the MCP stdio transport
 # ---------------------------------------------------------------------------
+_log_file = open("/tmp/voice-agent.log", "a")
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    stream=sys.stderr,
+    handlers=[
+        logging.StreamHandler(sys.stderr),
+        logging.StreamHandler(_log_file),
+    ],
 )
 log = logging.getLogger(__name__)
 
@@ -54,15 +58,15 @@ log = logging.getLogger(__name__)
 # Tool schemas
 # ---------------------------------------------------------------------------
 
-_TOOLS: list[types.Tool] = [
-    types.Tool(
-        name="initiate_call",
-        description=(
+_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "initiate_call",
+        "description": (
             "Join a Discord voice channel and initiate a conversation with the user. "
             "Speaks the opening message via TTS, then listens for the user's reply via STT. "
             "Returns a call_id used by subsequent tools and the user's first transcript."
         ),
-        inputSchema={
+        "inputSchema": {
             "type": "object",
             "properties": {
                 "channel_id": {
@@ -79,14 +83,14 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["message"],
         },
-    ),
-    types.Tool(
-        name="continue_call",
-        description=(
+    },
+    {
+        "name": "continue_call",
+        "description": (
             "Speak a message to the user during an active call and listen for their reply. "
             "Returns the STT transcript of the user's response."
         ),
-        inputSchema={
+        "inputSchema": {
             "type": "object",
             "properties": {
                 "call_id": {
@@ -100,14 +104,14 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["call_id", "message"],
         },
-    ),
-    types.Tool(
-        name="speak_to_user",
-        description=(
+    },
+    {
+        "name": "speak_to_user",
+        "description": (
             "Speak a one-way message to the user without waiting for a response. "
             "Useful for status updates or notifications during an active call."
         ),
-        inputSchema={
+        "inputSchema": {
             "type": "object",
             "properties": {
                 "call_id": {
@@ -121,14 +125,14 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["call_id", "message"],
         },
-    ),
-    types.Tool(
-        name="end_call",
-        description=(
+    },
+    {
+        "name": "end_call",
+        "description": (
             "Speak a farewell message, leave the voice channel, and clean up the session. "
             "Returns the total duration of the call in seconds."
         ),
-        inputSchema={
+        "inputSchema": {
             "type": "object",
             "properties": {
                 "call_id": {
@@ -142,16 +146,16 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["call_id", "message"],
         },
-    ),
-    types.Tool(
-        name="add_correction",
-        description=(
+    },
+    {
+        "name": "add_correction",
+        "description": (
             "Register an STT word correction. "
             "When the speech-to-text engine consistently mishears a word "
             "(e.g. a name or technical term), this stores a replacement so future "
             "transcripts are automatically corrected."
         ),
-        inputSchema={
+        "inputSchema": {
             "type": "object",
             "properties": {
                 "wrong": {
@@ -165,67 +169,47 @@ _TOOLS: list[types.Tool] = [
             },
             "required": ["wrong", "right"],
         },
-    ),
-    types.Tool(
-        name="list_corrections",
-        description="Return all stored STT word corrections as a JSON object.",
-        inputSchema={
+    },
+    {
+        "name": "list_corrections",
+        "description": "Return all stored STT word corrections as a JSON object.",
+        "inputSchema": {
             "type": "object",
             "properties": {},
             "required": [],
         },
-    ),
+    },
 ]
 
 
 # ---------------------------------------------------------------------------
-# Handler factories — built after config/manager are initialised
+# Handler registration — uses decorator-based MCP Server API
 # ---------------------------------------------------------------------------
 
-def _make_list_tools_handler():
-    """Return the list_tools handler function."""
+def _register_handlers(server: Server, manager: CallManager, config: Config) -> None:
+    """Register list_tools and call_tool handlers on the MCP server."""
 
-    async def handle_list_tools(
-        ctx: Any,
-        params: types.PaginatedRequestParams | None,
-    ) -> types.ListToolsResult:
+    @server.list_tools()
+    async def handle_list_tools() -> list[Tool]:
         """Enumerate all available tools."""
-        return types.ListToolsResult(tools=_TOOLS)
+        return [Tool(**t) for t in _TOOLS]
 
-    return handle_list_tools
-
-
-def _make_call_tool_handler(manager: CallManager, config: Config):
-    """Return the call_tool handler bound to *manager* and *config*."""
-
-    async def handle_call_tool(
-        ctx: Any,
-        params: types.CallToolRequestParams,
-    ) -> types.CallToolResult:
+    @server.call_tool()
+    async def handle_call_tool(name: str, arguments: dict[str, Any] | None) -> list[dict[str, Any]]:
         """Dispatch incoming tool calls to the appropriate CallManager method."""
-        args: dict[str, Any] = params.arguments or {}
-        name = params.name
+        args = arguments or {}
 
         try:
             result = await _dispatch(name, args, manager, config)
         except KeyError as exc:
-            return _error_result(str(exc))
+            return [{"type": "text", "text": str(exc)}]
         except ValueError as exc:
-            return _error_result(str(exc))
+            return [{"type": "text", "text": str(exc)}]
         except Exception as exc:
             log.exception("Unhandled error in tool %r", name)
-            return _error_result(f"Internal error: {exc}")
+            return [{"type": "text", "text": f"Internal error: {exc}"}]
 
-        return types.CallToolResult(
-            content=[
-                types.TextContent(
-                    type="text",
-                    text=json.dumps(result, indent=2),
-                )
-            ]
-        )
-
-    return handle_call_tool
+        return [{"type": "text", "text": json.dumps(result, indent=2)}]
 
 
 async def _dispatch(
@@ -345,12 +329,9 @@ async def run() -> None:
 
     manager = CallManager(bot_runner, stt_pipeline, tts_engine)
 
-    # Build the MCP server with pre-bound handlers
-    server = Server(
-        "agent-native-speech",
-        on_list_tools=_make_list_tools_handler(),
-        on_call_tool=_make_call_tool_handler(manager, config),
-    )
+    # Build the MCP server and register tool handlers
+    server = Server("agent-native-speech")
+    _register_handlers(server, manager, config)
 
     # Graceful shutdown on SIGINT / SIGTERM
     loop = asyncio.get_running_loop()
@@ -370,14 +351,7 @@ async def run() -> None:
                 server.run(
                     read_stream,
                     write_stream,
-                    InitializationOptions(
-                        server_name="agent-native-speech",
-                        server_version="0.1.0",
-                        capabilities=server.get_capabilities(
-                            notification_options=NotificationOptions(),
-                            experimental_capabilities={},
-                        ),
-                    ),
+                    server.create_initialization_options(),
                 ),
                 name="mcp-serve",
             )

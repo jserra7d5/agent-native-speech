@@ -166,6 +166,7 @@ class Transcriber:
                 language="en",
                 beam_size=5,
                 vad_filter=False,
+                no_speech_threshold=None,
                 initial_prompt=initial_prompt,
             )
         except Exception as exc:

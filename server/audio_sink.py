@@ -12,11 +12,9 @@ import threading
 from typing import TYPE_CHECKING
 
 import discord
+import discord.ext.voice_recv as voice_recv
 import librosa
 import numpy as np
-
-if TYPE_CHECKING:
-    import discord.ext.voice_recv as voice_recv
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +33,7 @@ DISCORD_FRAME_BYTES: int = (
 OUTPUT_SAMPLE_RATE: int = 16_000
 
 
-class UserAudioSink:
+class UserAudioSink(voice_recv.AudioSink):
     """Receives decoded PCM audio frames for a single Discord user.
 
     Discord delivers 48kHz stereo 16-bit PCM frames (20 ms each, 3840 bytes).
@@ -51,7 +49,7 @@ class UserAudioSink:
 
     Parameters
     ----------
-    member:
+    target_user:
         The :class:`discord.Member` whose audio should be captured.  Frames
         from any other user are silently dropped.
     max_duration_s:
@@ -62,10 +60,11 @@ class UserAudioSink:
 
     def __init__(
         self,
-        member: discord.Member,
+        target_user: discord.Member | discord.User,
         max_duration_s: float = 30.0,
     ) -> None:
-        self.member = member
+        super().__init__()
+        self.member = target_user
         self.max_duration_s = max_duration_s
 
         self._lock = threading.Lock()
@@ -78,7 +77,7 @@ class UserAudioSink:
 
         log.debug(
             "UserAudioSink created for member=%s max_duration_s=%.1f",
-            member,
+            self.member,
             max_duration_s,
         )
 
@@ -90,7 +89,7 @@ class UserAudioSink:
         """Return False — we want decoded PCM, not raw Opus packets."""
         return False
 
-    def write(self, user: discord.User | discord.Member, data: "voice_recv.VoiceData") -> None:
+    def write(self, user: discord.User | discord.Member | None, data: voice_recv.VoiceData) -> None:
         """Receive a decoded PCM frame from *user* and buffer it.
 
         Called from discord.py's voice-receive thread.  Frames from users
@@ -104,12 +103,13 @@ class UserAudioSink:
             A ``VoiceData`` object whose ``.pcm`` attribute is raw PCM bytes
             (48kHz, stereo, int16, 20 ms).
         """
-        if user.id != self.member.id:
+        if user is None or user.id != self.member.id:
             return
 
         pcm_bytes: bytes = data.pcm
         if not pcm_bytes:
             return
+
 
         # Decode bytes → int16 numpy array, then normalise to float32 [-1, 1].
         int16_samples = np.frombuffer(pcm_bytes, dtype=np.int16)
@@ -214,7 +214,7 @@ class UserAudioSink:
             return self._total_samples / OUTPUT_SAMPLE_RATE
 
 
-class MultiUserAudioSink:
+class MultiUserAudioSink(voice_recv.AudioSink):
     """An AudioSink that manages a :class:`UserAudioSink` per connected member.
 
     Useful when you want to capture audio from every user in a channel without
@@ -228,6 +228,7 @@ class MultiUserAudioSink:
     """
 
     def __init__(self, max_duration_s: float = 30.0) -> None:
+        super().__init__()
         self.max_duration_s = max_duration_s
         self._lock = threading.Lock()
         self._sinks: dict[int, UserAudioSink] = {}
@@ -236,8 +237,10 @@ class MultiUserAudioSink:
         """Return False — we want decoded PCM."""
         return False
 
-    def write(self, user: discord.User | discord.Member, data: "voice_recv.VoiceData") -> None:
+    def write(self, user: discord.User | discord.Member | None, data: voice_recv.VoiceData) -> None:
         """Route an incoming PCM frame to the appropriate per-user sink."""
+        if user is None:
+            return
         with self._lock:
             if user.id not in self._sinks:
                 if not isinstance(user, discord.Member):

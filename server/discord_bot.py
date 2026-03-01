@@ -23,6 +23,160 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def _patch_voice_recv_router() -> None:
+    """Monkey-patch PacketRouter._do_run to handle OpusError gracefully.
+
+    The upstream discord-ext-voice-recv PacketRouter crashes the entire
+    audio receive thread on a single corrupted Opus packet (e.g. the first
+    packet after TTS playback ends).  This patch wraps the decode call in
+    a try/except so the router continues processing subsequent packets.
+    """
+    try:
+        from discord.ext.voice_recv.router import PacketRouter
+        from discord.opus import OpusError
+    except ImportError:
+        return
+
+    def _resilient_do_run(self) -> None:
+        while not self._end_thread.is_set():
+            self.waiter.wait()
+            with self._lock:
+                for decoder in self.waiter.items:
+                    try:
+                        data = decoder.pop_data()
+                    except OpusError:
+                        log.debug("Skipping corrupted Opus packet (non-fatal)")
+                        continue
+                    if data is not None:
+                        self.sink.write(data.source, data)
+
+    PacketRouter._do_run = _resilient_do_run
+    log.info("Patched PacketRouter._do_run to handle OpusError gracefully")
+
+
+def _patch_voice_recv_dave_decrypt() -> None:
+    """Monkey-patch AudioReader.callback to add DAVE E2EE decryption.
+
+    discord-ext-voice-recv only handles transport-layer decryption
+    (aead_xchacha20_poly1305_rtpsize).  Discord now mandates DAVE E2EE,
+    which adds a second encryption layer on the Opus payload.  Without
+    this patch the Opus decoder receives still-encrypted data and produces
+    garbled audio.
+
+    This patch inserts a dave_session.decrypt() call between transport
+    decryption and the rest of the packet processing pipeline.
+    """
+    try:
+        from discord.ext.voice_recv.reader import AudioReader
+        from discord.ext.voice_recv import rtp
+        from discord.ext.voice_recv.rtp import ReceiverReportPacket
+        from nacl.exceptions import CryptoError
+        import davey
+    except ImportError:
+        log.warning("Cannot patch DAVE decrypt — missing imports")
+        return
+
+    def _dave_aware_callback(self, packet_data: bytes) -> None:
+        packet = rtp_packet = rtcp_packet = None
+        try:
+            if not rtp.is_rtcp(packet_data):
+                packet = rtp_packet = rtp.decode_rtp(packet_data)
+                packet.decrypted_data = self.decryptor.decrypt_rtp(packet)
+
+                # --- DAVE E2EE decryption ---
+                conn = self.voice_client._connection
+                ssrc = rtp_packet.ssrc
+                user_id = self.voice_client._get_id_from_ssrc(ssrc)
+
+                # Log DAVE state periodically for debugging
+                if not hasattr(_dave_aware_callback, '_log_count'):
+                    _dave_aware_callback._log_count = 0
+                _dave_aware_callback._log_count += 1
+                if _dave_aware_callback._log_count <= 3 or _dave_aware_callback._log_count % 200 == 0:
+                    log.info(
+                        "DAVE state [pkt#%d]: session=%s version=%d ready=%s "
+                        "ssrc=%s user_id=%s passthrough=%s",
+                        _dave_aware_callback._log_count,
+                        conn.dave_session is not None,
+                        conn.dave_protocol_version,
+                        conn.dave_session.ready if conn.dave_session else "N/A",
+                        ssrc, user_id,
+                        conn.dave_session.can_passthrough(user_id) if (conn.dave_session and user_id) else "N/A",
+                    )
+
+                if conn.dave_session is not None and conn.dave_protocol_version > 0:
+                    if user_id is not None:
+                        if conn.dave_session.ready and not conn.dave_session.can_passthrough(user_id):
+                            try:
+                                decrypted = conn.dave_session.decrypt(
+                                    user_id,
+                                    davey.MediaType.audio,
+                                    packet.decrypted_data,
+                                )
+                                packet.decrypted_data = bytes(decrypted)
+                            except Exception as e:
+                                if _dave_aware_callback._log_count <= 5 or _dave_aware_callback._log_count % 100 == 0:
+                                    log.warning(
+                                        "DAVE decrypt failed [pkt#%d] ssrc=%s user=%s: %s",
+                                        _dave_aware_callback._log_count, ssrc, user_id, e,
+                                    )
+                                return
+                        elif conn.dave_session.can_passthrough(user_id):
+                            pass  # passthrough mode — no DAVE decryption needed
+                        elif not conn.dave_session.ready:
+                            if _dave_aware_callback._log_count <= 5:
+                                log.info("DAVE session not ready yet, passing through packet")
+                # --- end DAVE decryption ---
+
+            else:
+                packet = rtcp_packet = rtp.decode_rtcp(
+                    self.decryptor.decrypt_rtcp(packet_data)
+                )
+                if not isinstance(packet, ReceiverReportPacket):
+                    log.info(
+                        "Received unexpected rtcp packet: type=%s, %s",
+                        packet.type, type(packet),
+                    )
+        except CryptoError:
+            log.error("CryptoError decoding packet data")
+            return
+        except Exception:
+            if self._is_ip_discovery_packet(packet_data):
+                return
+            log.exception("Error unpacking packet")
+        finally:
+            if self.error:
+                self.stop()
+                return
+            if not packet:
+                return
+
+        if rtcp_packet:
+            self.packet_router.feed_rtcp(rtcp_packet)
+        elif rtp_packet:
+            ssrc = rtp_packet.ssrc
+            if ssrc not in self.voice_client._ssrc_to_id:
+                if rtp_packet.is_silence():
+                    return
+                else:
+                    log.info("Received packet for unknown ssrc %s", ssrc)
+
+            self.speaking_timer.notify(ssrc)
+            try:
+                self.packet_router.feed_rtp(rtp_packet)
+            except Exception as e:
+                log.exception("Error processing rtp packet")
+                self.error = e
+                self.stop()
+
+    AudioReader.callback = _dave_aware_callback
+    log.info("Patched AudioReader.callback with DAVE E2EE decryption support")
+
+
+_patch_voice_recv_router()
+_patch_voice_recv_dave_decrypt()
+
+
 class VoiceBot(commands.Bot):
     """Discord bot that manages voice channel connections."""
 

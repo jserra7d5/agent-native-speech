@@ -242,6 +242,14 @@ class SpeechDetector:
 
         speech_detected: bool = prob >= self._config.threshold
 
+        # Log VAD probabilities periodically for debugging
+        if not hasattr(self, '_vad_log_count'):
+            self._vad_log_count = 0
+        self._vad_log_count += 1
+        if self._vad_log_count <= 5 or self._vad_log_count % 50 == 0 or speech_detected:
+            log.debug("VAD window #%d: prob=%.3f threshold=%.2f speech=%s state=%s",
+                      self._vad_log_count, prob, self._config.threshold, speech_detected, self._state.name)
+
         if self._state is _State.IDLE:
             # Always feed into the pre-speech ring-buffer so we have context.
             self._add_to_pre_buffer(window)

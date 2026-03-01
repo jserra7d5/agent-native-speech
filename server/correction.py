@@ -48,7 +48,15 @@ class CorrectionManager:
 
     def __init__(self, config: CorrectionConfig, anthropic_api_key: str) -> None:
         self._config = config
-        self._client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
+        # LLM correction is optional — if no API key, corrections are still
+        # stored but the LLM pass is skipped entirely.
+        if anthropic_api_key:
+            self._client: anthropic.AsyncAnthropic | None = anthropic.AsyncAnthropic(
+                api_key=anthropic_api_key
+            )
+        else:
+            self._client = None
+            log.info("No Anthropic API key; LLM-based correction disabled")
         # In-memory cache: user_id -> {wrong: right, ...}
         self._cache: dict[str, dict[str, str]] = {}
 
@@ -310,6 +318,12 @@ class CorrectionManager:
                 "Pre-filter: no correction keys found in transcript for user %s; "
                 "skipping API call",
                 user_id,
+            )
+            return transcript
+
+        if self._client is None:
+            log.debug(
+                "LLM correction disabled (no API key); returning transcript unchanged"
             )
             return transcript
 
