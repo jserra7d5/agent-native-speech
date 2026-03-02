@@ -7,8 +7,9 @@ MCP server that lets AI agents call users on Discord voice channels. Supports mu
 - **MCP server** (`server/main.py`) -- dual-transport (HTTP default, stdio with HTTP sidecar)
 - **HTTP app** (`server/http_app.py`) -- Starlette ASGI with `StreamableHTTPSessionManager`
 - **Discord bot** (`server/discord_bot.py`) -- background thread via `BotRunner`
-- **SessionManager** (`server/session_manager.py`) -- multi-session registry wrapping CallManager
-- **CallManager** (`server/call_manager.py`) -- bridges MCP tools to Discord voice ops
+- **SessionManager** (`server/session_manager.py`) -- multi-session registry wrapping CallManager + MessageManager
+- **CallManager** (`server/call_manager.py`) -- bridges MCP tools to Discord voice ops (persistent audio sink)
+- **MessageManager** (`server/message_manager.py`) -- text channel mode: same MCP tools, no voice
 - **TTS** -- pluggable via `TTSBackend` protocol: local Qwen3-TTS (`tts_engine.py`) or ElevenLabs (`elevenlabs_tts.py`) with voice pooling
 - **STT** (`server/stt_pipeline.py`) -- Silero VAD + transcriber (local Whisper or ElevenLabs Scribe) + LLM correction
 - **ElevenLabs STT** (`server/elevenlabs_stt.py`) -- cloud STT via ElevenLabs Scribe API
@@ -50,7 +51,9 @@ See `config.json.example` for all settings. Legacy `.env` files still work (auto
 - Voice clone profiles: `voices/<name>/profile.json` + `reference.wav`
 - Discord bot thread communicates with MCP async loop via `BotRunner.run_coroutine()`
 - Never write to stdout -- owned by MCP stdio transport
-- SessionManager wraps CallManager; CallManager handles voice ops
+- SessionManager wraps CallManager + MessageManager; routes by session mode (voice/message)
+- CallManager uses persistent audio sink (attached once per call, not per-listen)
+- MessageManager sends text messages, waits for user replies (text or voice message attachments)
 
 ## Testing
 
