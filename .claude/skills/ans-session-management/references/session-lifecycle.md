@@ -21,6 +21,9 @@ class AgentSession:
     last_activity: float         # Unix timestamp, updated on each tool call
     owning_user_id: str = ""     # Discord user ID who spawned this session
     call_session: CallSession | None = None  # Active voice call, or None
+    mode: str = "voice"          # "voice" or "message" (text channel mode)
+    text_channel_id: int | None = None  # Target text channel for message mode
+    message_session: MessageSession | None = None  # Active message session, or None
 ```
 
 ## Status Values
@@ -80,6 +83,7 @@ Parameters:
 ```python
 class SessionManager:
     _call_manager: CallManager           # Voice operations delegate
+    _message_manager: MessageManager | None  # Message mode delegate
     _runner: BotRunner                   # Discord bot thread reference
     _sessions: dict[str, AgentSession]   # session_id -> AgentSession
     _mcp_to_session: dict[str, str]      # mcp_session_id -> session_id
@@ -90,14 +94,24 @@ class SessionManager:
 
 ## Voice Operations Delegation
 
-All voice operations follow the same pattern:
+All operations are routed by session mode:
 
+**Voice mode** (`mode="voice"`):
 1. Look up the agent session (by `call_id` for continue/speak/end, by `session_id` for initiate).
 2. Resolve the effective voice via `VoicePool.resolve_voice(session_id)`.
 3. Delegate to `CallManager` with the resolved voice.
 4. Update `AgentSession.last_activity` and `status`.
 5. For `initiate_call`: link the resulting `CallSession` to `AgentSession.call_session`.
 6. For `end_call`: clear `call_session` and set status to `"idle"`.
+
+**Message mode** (`mode="message"`):
+1. Look up the agent session and check `_get_mode_for_call_id()`.
+2. Delegate to `MessageManager` (sends text messages, waits for user replies).
+3. No TTS/STT — messages sent as text, replies received as text or voice message attachments (decoded via ffmpeg + STT).
+4. For `initiate_call`: link the resulting `MessageSession` to `AgentSession.message_session`.
+5. Longer reply timeout (300s vs 60s for voice).
+
+The agent-facing MCP tool API is identical for both modes — the agent doesn't know which mode is active.
 
 The `_find_session_by_call_id()` helper does a linear scan over `_sessions` to find which agent session owns a given `call_id`. This is acceptable because the expected session count is small (single-digit concurrent agents).
 
@@ -122,10 +136,21 @@ This means after the first "myproject" unregisters and a new one registers, it g
 
 `SessionManager` exposes `add_correction()` and `list_corrections()` that delegate directly to `CallManager`. These are not session-aware -- corrections are global.
 
-## Relationship to CallManager
+## Relationship to CallManager and MessageManager
 
-`SessionManager` wraps but does not replace `CallManager`:
+`SessionManager` wraps but does not replace `CallManager` or `MessageManager`:
 - `CallManager` knows about `CallSession` (voice channel, audio, conversation history).
-- `SessionManager` knows about `AgentSession` (identity, voice assignment, message queue, status).
-- `AgentSession.call_session` points to the `CallSession` when a call is active.
-- The `call_manager` property provides direct access when needed by other modules.
+- `MessageManager` knows about `MessageSession` (text channel, reply futures, conversation history).
+- `SessionManager` knows about `AgentSession` (identity, voice assignment, message queue, status, mode).
+- `AgentSession.call_session` points to the `CallSession` when a voice call is active.
+- `AgentSession.message_session` points to the `MessageSession` when a message session is active.
+- The `call_manager` and `message_manager` properties provide direct access when needed.
+
+## MessageManager (`server/message_manager.py`)
+
+Handles text channel communication for message-mode sessions:
+- Sends agent messages as Discord text messages
+- Waits for user replies via `asyncio.Future` (resolved by bot's `on_message` handler)
+- Supports voice message attachments (`.ogg` decoded via ffmpeg, transcribed via STT pipeline)
+- Cross-event-loop future resolution via `loop.call_soon_threadsafe()`
+- 300-second reply timeout (configurable)
