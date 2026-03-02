@@ -161,7 +161,7 @@ class SpawnManager:
             raise ValueError(f"CLI not found: {cli} is not installed")
 
         # Build the CLI command
-        cli_command = self._build_cli_command(cli, directory, resume_session_id)
+        cli_command = self._build_cli_command(cli, directory, resume_session_id, headless)
 
         process_pid: int | None = None
         terminal_pid: int | None = None
@@ -253,8 +253,18 @@ class SpawnManager:
         cli: str,
         directory: str,
         resume_session_id: str | None = None,
+        headless: bool = False,
     ) -> list[str]:
-        """Build the shell command list for the coding agent CLI."""
+        """Build the shell command list for the coding agent CLI.
+
+        Args:
+            cli: CLI tool name ("claude" or "codex").
+            directory: Working directory for the agent.
+            resume_session_id: Optional session ID to resume.
+            headless: If True, use non-interactive flags (``--print``
+                for Claude).  Interactive terminal sessions pass the
+                prompt as a positional argument instead.
+        """
         if cli == "claude":
             mcp_config = json.dumps({
                 "mcpServers": {
@@ -266,7 +276,10 @@ class SpawnManager:
             cmd = ["claude", "--mcp-config", mcp_config]
             if resume_session_id:
                 cmd.extend(["--resume", resume_session_id])
-            cmd.extend(["--print", _CALLBACK_PROMPT])
+            if headless:
+                cmd.extend(["--print", _CALLBACK_PROMPT])
+            else:
+                cmd.append(_CALLBACK_PROMPT)
             return cmd
         elif cli == "codex":
             if resume_session_id:

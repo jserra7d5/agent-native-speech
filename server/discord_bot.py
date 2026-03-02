@@ -655,6 +655,77 @@ class VoiceBot(commands.Bot):
                 interaction.user.id, cli_type, session_id, session.session_id,
             )
 
+        # ---- /voices ----
+
+        @self.tree.command(
+            name="voices",
+            description="List configured voices and set the default",
+        )
+        @app_commands.describe(
+            set_default="Set this voice as the new default",
+        )
+        async def voices_cmd(
+            interaction: discord.Interaction,
+            set_default: str | None = None,
+        ) -> None:
+            tts_cfg = self.config.tts
+            elevenlabs_voices = tts_cfg.elevenlabs.voices or {}
+            pool_voices = self.config.voice_pool or []
+            system_voice = self.config.system_voice
+
+            if set_default:
+                # Validate the voice exists in our configured voices
+                if set_default not in elevenlabs_voices:
+                    available = ", ".join(sorted(elevenlabs_voices.keys()))
+                    await interaction.response.send_message(
+                        f"Unknown voice `{set_default}`. "
+                        f"Available: {available}",
+                        ephemeral=True,
+                    )
+                    return
+
+                # Update runtime config
+                tts_cfg.default_voice = set_default
+                tts_cfg.elevenlabs.default_voice_id = elevenlabs_voices[set_default]
+                # Update voice pool if session manager is available
+                if self._session_manager is not None:
+                    self._session_manager.voice_pool._default_voice = set_default
+                log.info(
+                    "Slash /voices: user=%s set default voice to %s",
+                    interaction.user.id, set_default,
+                )
+                await interaction.response.send_message(
+                    f"Default voice set to **{set_default}**.",
+                    ephemeral=True,
+                )
+                return
+
+            # List all voices
+            current_default = tts_cfg.default_voice
+            lines = []
+            for name, voice_id in sorted(elevenlabs_voices.items()):
+                markers = []
+                if name == current_default:
+                    markers.append("default")
+                if name == system_voice:
+                    markers.append("system")
+                if name in pool_voices:
+                    markers.append("pool")
+                suffix = f"  ({', '.join(markers)})" if markers else ""
+                lines.append(f"- **{name}** `{voice_id}`{suffix}")
+
+            if not lines:
+                await interaction.response.send_message(
+                    "No voices configured.", ephemeral=True,
+                )
+                return
+
+            header = f"**Configured voices** ({len(lines)}):\n"
+            body = "\n".join(lines)
+            await interaction.response.send_message(
+                f"{header}{body}", ephemeral=True,
+            )
+
     async def on_ready(self) -> None:
         log.info("Discord bot ready as %s", self.user)
         # Sync slash commands with Discord so they appear in the UI
