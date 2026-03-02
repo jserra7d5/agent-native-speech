@@ -58,9 +58,12 @@ class TerminalDetector:
 
     Detection chain (first match wins):
       1. Config override (``SpawnConfig.terminal_override``)
-      2. ``x-terminal-emulator`` (Debian/Ubuntu alternatives system)
-      3. ``$TERMINAL`` environment variable
-      4. PATH scan for known emulators
+      2. ``$TERMINAL`` environment variable
+      3. PATH scan for known emulators (curated order)
+
+    Note: ``x-terminal-emulator`` (Debian/Ubuntu alternatives) is
+    intentionally skipped — it can resolve to terminals that don't
+    render modern TUIs (like Claude Code) correctly.
     """
 
     def __init__(self, override: str = "") -> None:
@@ -76,16 +79,12 @@ class TerminalDetector:
                 "Configured terminal %r not found in PATH", self._override
             )
 
-        # 2. Debian/Ubuntu alternatives
-        if shutil.which("x-terminal-emulator"):
-            return "x-terminal-emulator"
-
-        # 3. $TERMINAL env var
+        # 2. $TERMINAL env var
         env_terminal = os.environ.get("TERMINAL", "")
         if env_terminal and shutil.which(env_terminal):
             return env_terminal
 
-        # 4. PATH scan
+        # 3. PATH scan
         for term in _TERMINAL_SCAN_ORDER:
             if shutil.which(term):
                 return term
@@ -167,6 +166,13 @@ class SpawnManager:
         # Build the CLI command
         cli_command = self._build_cli_command(cli, directory, resume_session_id, headless)
 
+        # Clean environment: strip Claude Code nesting-detection vars so
+        # the spawned agent doesn't refuse to start.
+        clean_env = {
+            k: v for k, v in os.environ.items()
+            if k not in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+        }
+
         process_pid: int | None = None
         terminal_pid: int | None = None
 
@@ -174,6 +180,7 @@ class SpawnManager:
             proc = subprocess.Popen(
                 cli_command,
                 cwd=directory,
+                env=clean_env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -198,6 +205,7 @@ class SpawnManager:
             proc = subprocess.Popen(
                 terminal_command,
                 cwd=directory,
+                env=clean_env,
                 start_new_session=True,
             )
             terminal_pid = proc.pid
