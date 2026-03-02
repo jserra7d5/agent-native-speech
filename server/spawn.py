@@ -50,9 +50,10 @@ _TERMINAL_SCAN_ORDER = [
 # The prompt injected into the spawned agent to make it call back.
 _CALLBACK_PROMPT = (
     "You have been launched as a voice-enabled coding agent. "
-    "Use the initiate_call tool immediately to call the user and "
-    "introduce yourself. Tell them which project directory you're "
-    "working in and ask what they'd like you to work on."
+    "Your FIRST action must be to call initiate_call — do NOT call any "
+    "other tools first. Introduce yourself, tell the user the project "
+    "name (just the folder name, not the full path), and ask what "
+    "they'd like you to work on."
 )
 
 

@@ -157,69 +157,6 @@ _TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "add_correction",
-        "description": (
-            "Register an STT word correction. "
-            "When the speech-to-text engine consistently mishears a word "
-            "(e.g. a name or technical term), this stores a replacement so future "
-            "transcripts are automatically corrected."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "wrong": {
-                    "type": "string",
-                    "description": "The word as incorrectly transcribed by the STT engine.",
-                },
-                "right": {
-                    "type": "string",
-                    "description": "The correct word to substitute.",
-                },
-            },
-            "required": ["wrong", "right"],
-        },
-    },
-    {
-        "name": "list_corrections",
-        "description": "Return all stored STT word corrections as a JSON object.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    },
-    {
-        "name": "set_speech_mode",
-        "description": (
-            "Set the speech completion mode. 'pause' uses silence detection, "
-            "'stop_token' waits for a spoken keyword."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "mode": {
-                    "type": "string",
-                    "enum": ["pause", "stop_token"],
-                    "description": "Speech completion mode.",
-                },
-                "stop_word": {
-                    "type": "string",
-                    "description": "Stop word for stop_token mode.",
-                },
-            },
-            "required": ["mode"],
-        },
-    },
-    {
-        "name": "list_sessions",
-        "description": "List all active agent sessions connected to the voice server.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    },
-    {
         "name": "check_messages",
         "description": (
             "Check for queued voice messages from the user. Returns any pending "
