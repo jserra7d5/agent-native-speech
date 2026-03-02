@@ -21,6 +21,7 @@ from server.config import Config
 
 if TYPE_CHECKING:
     from server.correction import CorrectionManager
+    from server.message_manager import MessageManager
     from server.session_browser import SessionBrowser
     from server.session_manager import SessionManager
     from server.spawn import SpawnManager
@@ -201,6 +202,7 @@ class VoiceBot(commands.Bot):
         self._spawn_manager: SpawnManager | None = None
         self._session_manager: SessionManager | None = None
         self._session_browser: SessionBrowser | None = None
+        self._message_manager: MessageManager | None = None
 
         # Register slash commands on the app_commands tree
         self._register_slash_commands()
@@ -229,6 +231,11 @@ class VoiceBot(commands.Bot):
         """Wire the SessionBrowser into the bot for /sessions browsing."""
         self._session_browser = browser
         log.info("SessionBrowser attached to VoiceBot")
+
+    def set_message_manager(self, manager: MessageManager) -> None:
+        """Wire the MessageManager into the bot for on_message handling."""
+        self._message_manager = manager
+        log.info("MessageManager attached to VoiceBot")
 
     def _register_slash_commands(self) -> None:
         """Register /correct and /corrections as application (slash) commands."""
@@ -347,16 +354,23 @@ class VoiceBot(commands.Bot):
             cli="CLI client: 'claude' or 'codex' (default: configured)",
             voice="TTS voice profile name (default: next from pool)",
             headless="Run without a terminal window (default: False)",
+            mode="Communication mode: 'voice' (join voice channel) or 'message' (text channel)",
         )
+        @app_commands.choices(mode=[
+            app_commands.Choice(name="voice", value="voice"),
+            app_commands.Choice(name="message", value="message"),
+        ])
         async def spawn_cmd(
             interaction: discord.Interaction,
             directory: str,
             cli: str | None = None,
             voice: str | None = None,
             headless: bool = False,
+            mode: app_commands.Choice[str] | None = None,
         ) -> None:
             # Expand ~ in directory path
             directory = os.path.expanduser(directory)
+            resolved_mode = mode.value if mode else "voice"
 
             if self._spawn_manager is None or self._session_manager is None:
                 await interaction.response.send_message(
@@ -366,8 +380,9 @@ class VoiceBot(commands.Bot):
                 return
 
             resolved_cli = cli or self._spawn_manager._config.spawn.default_cli
+            mode_label = f", mode: {resolved_mode}" if resolved_mode != "voice" else ""
             await interaction.response.send_message(
-                f"Spawning {resolved_cli} in {directory}...",
+                f"Spawning {resolved_cli} in {directory}{mode_label}...",
                 ephemeral=True,
             )
 
@@ -378,10 +393,16 @@ class VoiceBot(commands.Bot):
                     voice=voice,
                     headless=headless,
                     user_id=str(interaction.user.id),
+                    mode=resolved_mode,
                 )
             except (ValueError, RuntimeError) as exc:
                 await interaction.followup.send(str(exc), ephemeral=True)
                 return
+
+            # For message mode, capture the interaction channel as text_channel_id
+            text_channel_id = None
+            if resolved_mode == "message":
+                text_channel_id = interaction.channel_id
 
             # Register the session in the session manager
             session = self._session_manager.register_session(
@@ -393,18 +414,27 @@ class VoiceBot(commands.Bot):
                 terminal_pid=result.get("terminal_pid"),
                 owning_user_id=result.get("user_id", ""),
                 requested_voice=result.get("voice"),
+                mode=resolved_mode,
+                text_channel_id=text_channel_id,
             )
 
-            mode = "headless" if headless else "terminal"
-            await interaction.followup.send(
-                f"Spawned **{resolved_cli}** in `{directory}` ({mode}, "
-                f"voice: {session.voice_name}). Agent will call you shortly.",
-                ephemeral=True,
-            )
+            spawn_label = "headless" if headless else "terminal"
+            if resolved_mode == "message":
+                await interaction.followup.send(
+                    f"Spawned **{resolved_cli}** in `{directory}` ({spawn_label}, "
+                    f"message mode). Agent will message you shortly.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    f"Spawned **{resolved_cli}** in `{directory}` ({spawn_label}, "
+                    f"voice: {session.voice_name}). Agent will call you shortly.",
+                    ephemeral=True,
+                )
             log.info(
-                "Slash /spawn: user=%s spawned %s in %s (session=%s, voice=%s)",
+                "Slash /spawn: user=%s spawned %s in %s (session=%s, voice=%s, mode=%s)",
                 interaction.user.id, resolved_cli, directory,
-                session.session_id, session.voice_name,
+                session.session_id, session.voice_name, resolved_mode,
             )
 
         @self.tree.command(
@@ -512,8 +542,10 @@ class VoiceBot(commands.Bot):
                 except (KeyError, ValueError):
                     rel = "unknown"
 
+                session_mode = s.get("mode", "voice")
+                mode_indicator = f" [{session_mode}]" if session_mode != "voice" else ""
                 line = (
-                    f"{idx}. **{s['session_name']}** (`{s['session_id'][:8]}`) "
+                    f"{idx}. **{s['session_name']}**{mode_indicator} (`{s['session_id'][:8]}`) "
                     f"— {s['client_type']}, {s['status']} "
                     f"— voice: {s['voice']} — started {rel}"
                 )
@@ -767,6 +799,18 @@ class VoiceBot(commands.Bot):
         except Exception:
             log.exception("Failed to sync slash commands")
         self._ready_event.set()
+
+    async def on_message(self, message: discord.Message) -> None:
+        """Forward non-bot messages to the MessageManager for reply detection."""
+        if message.author.bot:
+            return
+        if self._message_manager is not None:
+            try:
+                self._message_manager.handle_discord_message(message)
+            except Exception:
+                log.exception("Error in MessageManager.handle_discord_message")
+        # Let commands.Bot process commands too
+        await self.process_commands(message)
 
     async def wait_until_bot_ready(self) -> None:
         await self._ready_event.wait()

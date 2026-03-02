@@ -226,8 +226,24 @@ async def _dispatch(
     """
     if name == "initiate_call":
         message = _require(args, "message")
-        # channel_id resolution: explicit arg > config default > auto-detect
         raw_channel = args.get("channel_id")
+
+        # Check if there's already a registered session in message mode
+        # (e.g. from /spawn with mode=message). If so, use its text_channel_id.
+        message_mode_session = _find_pending_message_session(manager)
+        if message_mode_session is not None:
+            # Message mode: use the stored text channel ID
+            channel_id = message_mode_session.text_channel_id
+            if channel_id is None:
+                raise ValueError(
+                    "Message mode session has no text_channel_id set."
+                )
+            return await manager.initiate_call(
+                channel_id=channel_id, message=message,
+                session_id=message_mode_session.session_id,
+            )
+
+        # Voice mode: channel_id resolution: explicit arg > config default > auto-detect
         if raw_channel is not None:
             channel_id = int(raw_channel)
         elif config.default_channel_id is not None:
@@ -310,6 +326,27 @@ def _require(args: dict[str, Any], key: str) -> Any:
     if key not in args or args[key] is None:
         raise ValueError(f"Missing required argument: '{key}'")
     return args[key]
+
+
+def _find_pending_message_session(manager: SessionManager):
+    """Find a registered message-mode session that hasn't started a call yet.
+
+    When /spawn is used with mode=message, the session is registered before
+    the agent calls initiate_call.  This function finds that pending session
+    so _dispatch can route to the MessageManager.
+
+    Returns the AgentSession if found, None otherwise.
+    """
+    from server.session_manager import AgentSession  # noqa: PLC0415
+    for session in manager._sessions.values():
+        if (
+            session.mode == "message"
+            and session.text_channel_id is not None
+            and session.message_session is None
+            and session.status == "connected"
+        ):
+            return session
+    return None
 
 
 def _parse_args() -> argparse.Namespace:
@@ -408,9 +445,18 @@ def _init_components(config: Config) -> tuple[
         tts_engine.warmup()
         log.info("All models pre-loaded and warmed up")
 
-    # Create the session manager (wraps CallManager + VoicePool)
+    # Create the message manager for text-channel message mode
+    from server.message_manager import MessageManager  # noqa: PLC0415
+    message_manager = MessageManager(
+        bot_runner, stt_pipeline=stt_pipeline,
+    )
+    bot_runner.bot.set_message_manager(message_manager)
+    log.info("MessageManager wired into Discord bot")
+
+    # Create the session manager (wraps CallManager + VoicePool + MessageManager)
     session_manager = SessionManager(
-        bot_runner, stt_pipeline, tts_engine, speech_mode_manager, config=config
+        bot_runner, stt_pipeline, tts_engine, speech_mode_manager, config=config,
+        message_manager=message_manager,
     )
 
     # Create the spawn manager and wire into bot for /spawn command

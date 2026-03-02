@@ -56,6 +56,14 @@ _CALLBACK_PROMPT = (
     "they'd like you to work on."
 )
 
+_CALLBACK_PROMPT_MESSAGE = (
+    "You have been launched as a coding agent with text messaging. "
+    "Your FIRST action must be to call initiate_call — do NOT call any "
+    "other tools first. Introduce yourself, tell the user the project "
+    "name (just the folder name, not the full path), and ask what "
+    "they'd like you to work on."
+)
+
 
 class TerminalDetector:
     """Detect an available terminal emulator on the host system.
@@ -132,6 +140,7 @@ class SpawnManager:
         headless: bool = False,
         user_id: str = "",
         resume_session_id: str | None = None,
+        mode: str = "voice",
     ) -> dict[str, Any]:
         """Spawn a coding agent CLI session.
 
@@ -143,10 +152,11 @@ class SpawnManager:
             user_id: Discord user ID of the spawner.
             resume_session_id: If set, resume this existing session instead
                 of starting a new one.
+            mode: Communication mode ("voice" or "message").
 
         Returns:
             dict with keys: process_pid, terminal_pid, directory, cli,
-            voice, headless, session_name.
+            voice, headless, session_name, mode.
 
         Raises:
             ValueError: If directory doesn't exist or CLI is not installed.
@@ -171,8 +181,8 @@ class SpawnManager:
         elif cli == "codex":
             self._ensure_codex_mcp_config()
 
-        # Build the CLI command
-        cli_command = self._build_cli_command(cli, directory, resume_session_id, headless)
+        # Build the CLI command (use message-mode prompt when applicable)
+        cli_command = self._build_cli_command(cli, directory, resume_session_id, headless, mode)
 
         # Clean environment: strip Claude Code nesting-detection vars so
         # the spawned agent doesn't refuse to start.
@@ -232,6 +242,7 @@ class SpawnManager:
             "headless": headless,
             "session_name": session_name,
             "user_id": user_id,
+            "mode": mode,
         }
 
     def kill_session(
@@ -274,6 +285,7 @@ class SpawnManager:
         directory: str,
         resume_session_id: str | None = None,
         headless: bool = False,
+        mode: str = "voice",
     ) -> list[str]:
         """Build the shell command list for the coding agent CLI.
 
@@ -284,7 +296,11 @@ class SpawnManager:
             headless: If True, use non-interactive flags (``--print``
                 for Claude).  Interactive terminal sessions pass the
                 prompt as a positional argument instead.
+            mode: Communication mode ("voice" or "message").
         """
+        # Select prompt based on mode
+        prompt = _CALLBACK_PROMPT_MESSAGE if mode == "message" else _CALLBACK_PROMPT
+
         if cli == "claude":
             # MCP config is provided via user-scoped MCP settings (added
             # with `claude mcp add --scope user`).  The --mcp-config CLI
@@ -293,9 +309,9 @@ class SpawnManager:
             if resume_session_id:
                 cmd.extend(["--resume", resume_session_id])
             if headless:
-                cmd.extend(["--print", _CALLBACK_PROMPT])
+                cmd.extend(["--print", prompt])
             else:
-                cmd.append(_CALLBACK_PROMPT)
+                cmd.append(prompt)
             return cmd
         elif cli == "codex":
             # MCP config is provided via global ~/.codex/config.toml
@@ -305,20 +321,20 @@ class SpawnManager:
                     "codex", "resume", resume_session_id,
                     "--yolo",
                     "-C", directory,
-                    _CALLBACK_PROMPT,
+                    prompt,
                 ]
             if headless:
                 return [
                     "codex", "exec",
                     "--yolo",
                     "-C", directory,
-                    _CALLBACK_PROMPT,
+                    prompt,
                 ]
             return [
                 "codex",
                 "--yolo",
                 "-C", directory,
-                _CALLBACK_PROMPT,
+                prompt,
             ]
         else:
             raise ValueError(f"Unsupported CLI: {cli!r}")
