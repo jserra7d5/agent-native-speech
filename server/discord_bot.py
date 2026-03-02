@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
+import time
 from typing import TYPE_CHECKING, Callable
 
 import discord
@@ -19,6 +21,10 @@ from server.config import Config
 
 if TYPE_CHECKING:
     from server.correction import CorrectionManager
+    from server.session_browser import SessionBrowser
+    from server.session_manager import SessionManager
+    from server.spawn import SpawnManager
+    from server.speech_mode import SpeechModeManager
 
 log = logging.getLogger(__name__)
 
@@ -191,6 +197,10 @@ class VoiceBot(commands.Bot):
         # call_id -> voice_client mapping managed by CallManager
         self._on_user_leave: Callable[[int], None] | None = None
         self._correction_manager: CorrectionManager | None = None
+        self._speech_mode_manager: SpeechModeManager | None = None
+        self._spawn_manager: SpawnManager | None = None
+        self._session_manager: SessionManager | None = None
+        self._session_browser: SessionBrowser | None = None
 
         # Register slash commands on the app_commands tree
         self._register_slash_commands()
@@ -199,6 +209,26 @@ class VoiceBot(commands.Bot):
         """Wire the CorrectionManager into the bot for slash command access."""
         self._correction_manager = manager
         log.info("CorrectionManager attached to VoiceBot")
+
+    def set_speech_mode_manager(self, manager: SpeechModeManager) -> None:
+        """Wire the SpeechModeManager into the bot for slash command access."""
+        self._speech_mode_manager = manager
+        log.info("SpeechModeManager attached to VoiceBot")
+
+    def set_spawn_manager(self, manager: SpawnManager) -> None:
+        """Wire the SpawnManager into the bot for /spawn command access."""
+        self._spawn_manager = manager
+        log.info("SpawnManager attached to VoiceBot")
+
+    def set_session_manager(self, manager: SessionManager) -> None:
+        """Wire the SessionManager into the bot for session commands."""
+        self._session_manager = manager
+        log.info("SessionManager attached to VoiceBot")
+
+    def set_session_browser(self, browser: SessionBrowser) -> None:
+        """Wire the SessionBrowser into the bot for /sessions browsing."""
+        self._session_browser = browser
+        log.info("SessionBrowser attached to VoiceBot")
 
     def _register_slash_commands(self) -> None:
         """Register /correct and /corrections as application (slash) commands."""
@@ -249,6 +279,375 @@ class VoiceBot(commands.Bot):
             await interaction.response.send_message(
                 f"Your STT corrections ({len(data)}):\n{body}",
                 ephemeral=True,
+            )
+
+        @self.tree.command(
+            name="mode",
+            description="Set the speech completion mode (pause or stop_token)",
+        )
+        @app_commands.describe(
+            mode="Speech completion mode: 'pause' (silence detection) or 'stop_token' (keyword)",
+            stop_word="Stop word for stop_token mode (e.g. 'over')",
+        )
+        @app_commands.choices(mode=[
+            app_commands.Choice(name="pause", value="pause"),
+            app_commands.Choice(name="stop_token", value="stop_token"),
+        ])
+        async def mode_cmd(
+            interaction: discord.Interaction,
+            mode: app_commands.Choice[str],
+            stop_word: str | None = None,
+        ) -> None:
+            if self._speech_mode_manager is None:
+                await interaction.response.send_message(
+                    "Speech mode manager is not available yet. Please try again shortly.",
+                    ephemeral=True,
+                )
+                return
+            result = self._speech_mode_manager.set_mode(mode.value, stop_word=stop_word)
+            log.info(
+                "Slash /mode: user=%s set mode=%s stop_word=%s",
+                interaction.user.id, result["mode"], result["stop_word"],
+            )
+            await interaction.response.send_message(
+                f"Speech mode set to **{result['mode']}** (stop word: \"{result['stop_word']}\").",
+                ephemeral=True,
+            )
+
+        @self.tree.command(
+            name="stopword",
+            description="Change the stop word for stop_token speech mode",
+        )
+        @app_commands.describe(word="The new stop word (e.g. 'over', 'done', 'end')")
+        async def stopword_cmd(interaction: discord.Interaction, word: str) -> None:
+            if self._speech_mode_manager is None:
+                await interaction.response.send_message(
+                    "Speech mode manager is not available yet. Please try again shortly.",
+                    ephemeral=True,
+                )
+                return
+            current_mode = self._speech_mode_manager.get_mode()
+            result = self._speech_mode_manager.set_mode(current_mode, stop_word=word)
+            log.info(
+                "Slash /stopword: user=%s set stop_word=%s",
+                interaction.user.id, result["stop_word"],
+            )
+            await interaction.response.send_message(
+                f"Stop word updated to \"{result['stop_word']}\" (mode: {result['mode']}).",
+                ephemeral=True,
+            )
+
+        @self.tree.command(
+            name="spawn",
+            description="Launch a coding agent CLI in a terminal on the host PC",
+        )
+        @app_commands.describe(
+            directory="Absolute path to the project working directory",
+            cli="CLI client: 'claude' or 'codex' (default: configured)",
+            voice="TTS voice profile name (default: next from pool)",
+            headless="Run without a terminal window (default: False)",
+        )
+        async def spawn_cmd(
+            interaction: discord.Interaction,
+            directory: str,
+            cli: str | None = None,
+            voice: str | None = None,
+            headless: bool = False,
+        ) -> None:
+            if self._spawn_manager is None or self._session_manager is None:
+                await interaction.response.send_message(
+                    "Spawn system is not available yet. Please try again shortly.",
+                    ephemeral=True,
+                )
+                return
+
+            resolved_cli = cli or self._spawn_manager._config.spawn.default_cli
+            await interaction.response.send_message(
+                f"Spawning {resolved_cli} in {directory}...",
+                ephemeral=True,
+            )
+
+            try:
+                result = self._spawn_manager.spawn_session(
+                    directory=directory,
+                    cli=cli,
+                    voice=voice,
+                    headless=headless,
+                    user_id=str(interaction.user.id),
+                )
+            except (ValueError, RuntimeError) as exc:
+                await interaction.followup.send(str(exc), ephemeral=True)
+                return
+
+            # Register the session in the session manager
+            session = self._session_manager.register_session(
+                session_name=result["session_name"],
+                client_type=result["cli"],
+                directory=result["directory"],
+                spawn_mode="headless" if result["headless"] else "interactive",
+                process_pid=result.get("process_pid"),
+                terminal_pid=result.get("terminal_pid"),
+                owning_user_id=result.get("user_id", ""),
+                requested_voice=result.get("voice"),
+            )
+
+            mode = "headless" if headless else "terminal"
+            await interaction.followup.send(
+                f"Spawned **{resolved_cli}** in `{directory}` ({mode}, "
+                f"voice: {session.voice_name}). Agent will call you shortly.",
+                ephemeral=True,
+            )
+            log.info(
+                "Slash /spawn: user=%s spawned %s in %s (session=%s, voice=%s)",
+                interaction.user.id, resolved_cli, directory,
+                session.session_id, session.voice_name,
+            )
+
+        @self.tree.command(
+            name="sessions",
+            description="List active voice sessions or browse session history",
+        )
+        @app_commands.describe(
+            directory="Browse sessions from a project directory (requires SessionBrowser)",
+            recent="List N most recent sessions from history",
+            cli="Filter by CLI type: 'claude' or 'codex'",
+        )
+        async def sessions_cmd(
+            interaction: discord.Interaction,
+            directory: str | None = None,
+            recent: int | None = None,
+            cli: str | None = None,
+        ) -> None:
+            # If directory or recent requested, try SessionBrowser
+            if directory is not None or recent is not None:
+                if self._session_browser is None:
+                    await interaction.response.send_message(
+                        "Session browser is not available yet. Showing active sessions only.",
+                        ephemeral=True,
+                    )
+                else:
+                    try:
+                        if recent is not None:
+                            entries = self._session_browser.list_recent(
+                                n=recent, cli_filter=cli,
+                            )
+                        elif directory is not None:
+                            if cli == "codex":
+                                entries = self._session_browser.list_codex_sessions(directory)
+                            else:
+                                entries = self._session_browser.list_claude_sessions(directory)
+                        else:
+                            entries = []
+
+                        if not entries:
+                            await interaction.response.send_message(
+                                "No sessions found.", ephemeral=True,
+                            )
+                            return
+
+                        lines = []
+                        for idx, entry in enumerate(entries, 1):
+                            summary = entry.summary or entry.session_id
+                            line = f"{idx}. **{summary}**"
+                            if entry.cli:
+                                line += f" ({entry.cli})"
+                            if entry.directory:
+                                line += f" — `{entry.directory}`"
+                            if entry.git_branch:
+                                line += f" — branch: {entry.git_branch}"
+                            lines.append(line)
+
+                        body = "\n".join(lines)
+                        await interaction.response.send_message(
+                            f"Sessions ({len(entries)}):\n{body}",
+                            ephemeral=True,
+                        )
+                        return
+                    except Exception as exc:
+                        log.warning("SessionBrowser error: %s", exc)
+                        await interaction.response.send_message(
+                            f"Session browser error: {exc}\nFalling back to active sessions.",
+                            ephemeral=True,
+                        )
+                        return
+
+            # Default: show active sessions from SessionManager
+            if self._session_manager is None:
+                await interaction.response.send_message(
+                    "Session manager is not available yet. Please try again shortly.",
+                    ephemeral=True,
+                )
+                return
+
+            active = self._session_manager.list_active_sessions()
+            if not active:
+                await interaction.response.send_message(
+                    "No active sessions.", ephemeral=True,
+                )
+                return
+
+            lines = []
+            now = time.time()
+            for idx, s in enumerate(active, 1):
+                # Parse started_at for relative time
+                try:
+                    started = time.mktime(
+                        time.strptime(s["started_at"], "%Y-%m-%dT%H:%M:%SZ")
+                    ) - time.timezone
+                    elapsed = now - started
+                    if elapsed < 60:
+                        rel = f"{int(elapsed)}s ago"
+                    elif elapsed < 3600:
+                        rel = f"{int(elapsed // 60)}m ago"
+                    else:
+                        rel = f"{elapsed / 3600:.1f}h ago"
+                except (KeyError, ValueError):
+                    rel = "unknown"
+
+                line = (
+                    f"{idx}. **{s['session_name']}** ({s['client_type']}, "
+                    f"{s['status']}) — voice: {s['voice']} — started {rel}"
+                )
+                count = s.get("queued_message_count", 0)
+                if count:
+                    line += f" — {count} queued message(s)"
+                lines.append(line)
+
+            body = "\n".join(lines)
+            await interaction.response.send_message(
+                f"Active sessions ({len(active)}):\n{body}",
+                ephemeral=True,
+            )
+
+        @self.tree.command(
+            name="kill",
+            description="Terminate an active voice session",
+        )
+        @app_commands.describe(session="Session name or ID to terminate")
+        async def kill_cmd(interaction: discord.Interaction, session: str) -> None:
+            if self._session_manager is None or self._spawn_manager is None:
+                await interaction.response.send_message(
+                    "Session management is not available yet. Please try again shortly.",
+                    ephemeral=True,
+                )
+                return
+
+            active = self._session_manager.list_active_sessions()
+            matched = None
+            for s in active:
+                if s["session_id"] == session or s["session_name"] == session:
+                    matched = s
+                    break
+
+            if matched is None:
+                await interaction.response.send_message(
+                    f"Session not found: {session}", ephemeral=True,
+                )
+                return
+
+            # Get full session object for PIDs
+            try:
+                full_session = self._session_manager.get_session(matched["session_id"])
+            except KeyError:
+                await interaction.response.send_message(
+                    f"Session not found: {session}", ephemeral=True,
+                )
+                return
+
+            self._spawn_manager.kill_session(
+                process_pid=full_session.process_pid,
+                terminal_pid=full_session.terminal_pid,
+            )
+            self._session_manager.unregister_session(matched["session_id"])
+
+            name = matched["session_name"]
+            log.info(
+                "Slash /kill: user=%s terminated session %s (%s)",
+                interaction.user.id, matched["session_id"], name,
+            )
+            await interaction.response.send_message(
+                f"Session {name} terminated.", ephemeral=True,
+            )
+
+        @self.tree.command(
+            name="resume",
+            description="Resume a previous CLI session",
+        )
+        @app_commands.describe(
+            session_id="Session ID to resume",
+            voice="TTS voice profile name (default: next from pool)",
+            headless="Run without a terminal window (default: False)",
+        )
+        async def resume_cmd(
+            interaction: discord.Interaction,
+            session_id: str,
+            voice: str | None = None,
+            headless: bool = False,
+        ) -> None:
+            if self._spawn_manager is None or self._session_manager is None:
+                await interaction.response.send_message(
+                    "Spawn system is not available yet. Please try again shortly.",
+                    ephemeral=True,
+                )
+                return
+
+            # Detect CLI type via SessionBrowser if available
+            cli_type = None
+            directory = None
+            if self._session_browser is not None:
+                try:
+                    cli_type = self._session_browser.detect_cli(session_id)
+                except Exception as exc:
+                    log.warning("Failed to detect CLI for session %s: %s", session_id, exc)
+
+            if cli_type is None or cli_type == "unknown":
+                cli_type = self._config.spawn.default_cli
+
+            # Build resume command
+            if cli_type == "codex":
+                resume_prompt = f"codex resume {session_id}"
+            else:
+                resume_prompt = f'claude -r "{session_id}"'
+
+            await interaction.response.send_message(
+                f"Resuming {cli_type} session `{session_id}`...",
+                ephemeral=True,
+            )
+
+            try:
+                # Use home directory as fallback working directory
+                work_dir = directory or os.path.expanduser("~")
+                result = self._spawn_manager.spawn_session(
+                    directory=work_dir,
+                    cli=cli_type,
+                    voice=voice,
+                    headless=headless,
+                    user_id=str(interaction.user.id),
+                )
+            except (ValueError, RuntimeError) as exc:
+                await interaction.followup.send(str(exc), ephemeral=True)
+                return
+
+            session = self._session_manager.register_session(
+                session_name=result["session_name"],
+                client_type=result["cli"],
+                directory=result["directory"],
+                spawn_mode="headless" if result["headless"] else "interactive",
+                process_pid=result.get("process_pid"),
+                terminal_pid=result.get("terminal_pid"),
+                owning_user_id=result.get("user_id", ""),
+                requested_voice=result.get("voice"),
+            )
+
+            mode = "headless" if headless else "terminal"
+            await interaction.followup.send(
+                f"Resumed **{cli_type}** session `{session_id}` ({mode}, "
+                f"voice: {session.voice_name}).",
+                ephemeral=True,
+            )
+            log.info(
+                "Slash /resume: user=%s resumed %s session %s (new_session=%s)",
+                interaction.user.id, cli_type, session_id, session.session_id,
             )
 
     async def on_ready(self) -> None:
@@ -325,6 +724,21 @@ class VoiceBot(commands.Bot):
         if not isinstance(channel, discord.VoiceChannel):
             return True
         return all(m.bot for m in channel.members)
+
+    async def find_user_voice_channel_any(self) -> int | None:
+        """Find the first voice channel with a non-bot user.
+
+        Iterates all guilds the bot is in, checks each voice channel's
+        members for a non-bot user, and returns that channel's ID.
+        Returns None if no user is found in any voice channel.
+        """
+        await self.wait_until_bot_ready()
+        for guild in self.guilds:
+            for channel in guild.voice_channels:
+                for member in channel.members:
+                    if not member.bot:
+                        return channel.id
+        return None
 
     async def join_voice_channel(self, channel_id: int) -> discord.VoiceClient:
         """Join a voice channel by ID. Returns the VoiceClient."""

@@ -17,8 +17,8 @@
 
 **Purpose**: Add dependencies and create directory structure for all new modules
 
-- [ ] T001 Add starlette, uvicorn, thefuzz, and python-Levenshtein to dependencies in pyproject.toml; add `voice-agent` console script entry point (`server.init:main`) and `voice-agent-serve` entry point (`server.main:main`)
-- [ ] T002 [P] Create directory structure: `server/init/__init__.py`, `server/hooks/`, `tests/unit/`, `tests/integration/`
+- [x] T001 Add starlette, uvicorn, thefuzz, and python-Levenshtein to dependencies in pyproject.toml; add `voice-agent` console script entry point (`server.init:main`) and `voice-agent-serve` entry point (`server.main:main`)
+- [x] T002 [P] Create directory structure: `server/init/__init__.py`, `server/hooks/`, `tests/unit/`, `tests/integration/`
 
 ---
 
@@ -28,7 +28,7 @@
 
 **CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T003 Extend `server/config.py` with new dataclasses and fields: `SpeechModeConfig` (mode, stop_word, max_timeout_s), `SpawnConfig` (default_cli, terminal_override, server_url), `RouterConfig` (enabled, backend, model, api_key, api_base_url, codex_auth_path, timeout_ms), `ServerConfig` (host, port, transport), voice pool fields (voice_pool list, system_voice name), max_queue_depth. Update `Config.from_env()` to load all new env vars. Add fallback config path `~/.config/voice-agent/config.env` when no local `.env` exists.
+- [x] T003 Extend `server/config.py` with new dataclasses and fields: `SpeechModeConfig` (mode, stop_word, max_timeout_s), `SpawnConfig` (default_cli, terminal_override, server_url), `RouterConfig` (enabled, backend, model, api_key, api_base_url, codex_auth_path, timeout_ms), `ServerConfig` (host, port, transport), voice pool fields (voice_pool list, system_voice name), max_queue_depth. Update `Config.from_env()` to load all new env vars. Add fallback config path `~/.config/voice-agent/config.env` when no local `.env` exists.
 
 **Checkpoint**: Config foundation ready — user story implementation can begin
 
@@ -42,11 +42,11 @@
 
 ### Implementation
 
-- [ ] T004 [P] [US1] Create `server/speech_mode.py`: `SpeechMode` dataclass (mode enum, stop_word, max_timeout_s), `SpeechModeManager` class with `get_mode()`, `set_mode()`, `is_stop_token()`, and `check_stop_word(transcript: str) -> tuple[bool, str]` that checks if transcript ends with the stop word (case-insensitive, strip punctuation) and returns (found, cleaned_transcript)
-- [ ] T005 [US1] Extend `server/stt_pipeline.py` `listen()` method: add `speech_mode` parameter. In stop-token mode, instead of returning on first `SpeechEvent(type="end")`, accumulate segments — transcribe each segment, check for stop word via `SpeechModeManager.check_stop_word()`, continue listening if not found, concatenate all segment transcripts when stop word detected or timeout reached. Reset VAD between segments. Strip stop word from final transcript.
-- [ ] T006 [US2] Add `/mode` and `/stopword` Discord slash commands in `server/discord_bot.py`: `/mode mode:<pause|stop_token> [stop_word:<string>]` sets the global speech mode; `/stopword word:<string>` updates the stop word. Both return ephemeral responses. Store reference to `SpeechModeManager` on the bot instance.
-- [ ] T007 [US2] Add `set_speech_mode` MCP tool: register tool schema in `server/main.py` `_TOOLS` list, add dispatch case in `_dispatch()`, route to `SpeechModeManager.set_mode()`. Return current mode and stop word.
-- [ ] T008 [US1] Wire `SpeechModeManager` into server startup in `server/main.py`: create instance from config, pass to `CallManager` (or future `SessionManager`), pass to `discord_bot` for slash commands. Update `CallManager._stt_listen()` to pass current speech mode to `STTPipeline.listen()`.
+- [x] T004 [P] [US1] Create `server/speech_mode.py`: `SpeechMode` dataclass (mode enum, stop_word, max_timeout_s), `SpeechModeManager` class with `get_mode()`, `set_mode()`, `is_stop_token()`, and `check_stop_word(transcript: str) -> tuple[bool, str]` that checks if transcript ends with the stop word (case-insensitive, strip punctuation) and returns (found, cleaned_transcript)
+- [x] T005 [US1] Extend `server/stt_pipeline.py` `listen()` method: add `speech_mode` parameter. In stop-token mode, instead of returning on first `SpeechEvent(type="end")`, accumulate segments — transcribe each segment, check for stop word via `SpeechModeManager.check_stop_word()`, continue listening if not found, concatenate all segment transcripts when stop word detected or timeout reached. Reset VAD between segments. Strip stop word from final transcript.
+- [x] T006 [US2] Add `/mode` and `/stopword` Discord slash commands in `server/discord_bot.py`: `/mode mode:<pause|stop_token> [stop_word:<string>]` sets the global speech mode; `/stopword word:<string>` updates the stop word. Both return ephemeral responses. Store reference to `SpeechModeManager` on the bot instance.
+- [x] T007 [US2] Add `set_speech_mode` MCP tool: register tool schema in `server/main.py` `_TOOLS` list, add dispatch case in `_dispatch()`, route to `SpeechModeManager.set_mode()`. Return current mode and stop word.
+- [x] T008 [US1] Wire `SpeechModeManager` into server startup in `server/main.py`: create instance from config, pass to `CallManager` (or future `SessionManager`), pass to `discord_bot` for slash commands. Update `CallManager._stt_listen()` to pass current speech mode to `STTPipeline.listen()`.
 
 **Checkpoint**: Speech modes fully functional — stop-token mode works, toggling works via Discord command and MCP tool
 
@@ -60,9 +60,9 @@
 
 ### Implementation
 
-- [ ] T009 [P] [US3] Add `find_user_voice_channel(guild_id: int, user_id: int) -> int | None` method to `VoiceBot` in `server/discord_bot.py`: iterate guild's voice channels, find the channel containing the target non-bot user, return channel ID or None
-- [ ] T010 [US3] Update `_dispatch()` in `server/main.py` for `initiate_call`: when `channel_id` is omitted AND `default_channel_id` is None, resolve the user's voice channel via `find_user_voice_channel()`. Need to track the owning user from the MCP session or Discord interaction context. If user not in any channel, return clear error.
-- [ ] T011 [US3] Update `initiate_call` tool schema in `server/main.py` `_TOOLS`: update description to mention auto-detection. Add `session_name` optional property per contract.
+- [x] T009 [P] [US3] Add `find_user_voice_channel(guild_id: int, user_id: int) -> int | None` method to `VoiceBot` in `server/discord_bot.py`: iterate guild's voice channels, find the channel containing the target non-bot user, return channel ID or None
+- [x] T010 [US3] Update `_dispatch()` in `server/main.py` for `initiate_call`: when `channel_id` is omitted AND `default_channel_id` is None, resolve the user's voice channel via `find_user_voice_channel()`. Need to track the owning user from the MCP session or Discord interaction context. If user not in any channel, return clear error.
+- [x] T011 [US3] Update `initiate_call` tool schema in `server/main.py` `_TOOLS`: update description to mention auto-detection. Add `session_name` optional property per contract.
 
 **Checkpoint**: Auto-detect works — no channel_id needed when user is in a voice channel
 
@@ -76,10 +76,10 @@
 
 ### Implementation
 
-- [ ] T012 [P] [US10] Create `server/init/wizard.py`: interactive setup wizard using `input()` with argparse for non-interactive `--flags`. Steps: Discord token, TTS backend, voice, CLI default, speech mode, stop word, Whisper model, terminal emulator. Pre-fill from existing config on re-run. Write to `~/.config/voice-agent/config.env`. Validate Discord token via lightweight API call.
-- [ ] T013 [P] [US10] Create `server/init/mcp_register.py`: detect installed CLIs (`which claude`, `which codex`). For Claude Code: run `claude mcp add --transport http --scope user voice-agent http://127.0.0.1:{port}/mcp` or write to `~/.claude.json` directly. For Codex: append `[mcp_servers.voice-agent]` to `~/.codex/config.toml`. Check for existing entries to avoid duplicates.
-- [ ] T014 [P] [US10] Create `server/init/systemd.py`: check systemd availability (`/run/systemd/system`), generate user unit file from template (WorkingDirectory, ExecStart with venv python path, Restart=always, RestartSec=10), write to `~/.config/systemd/user/voice-agent.service`, run `systemctl --user daemon-reload && enable && start`. Fall back gracefully on non-systemd systems.
-- [ ] T015 [US10] Create `server/init/__init__.py` with `main()` entry point: orchestrate wizard flow (wizard → mcp_register → systemd → summary). Wire to console script entry point in pyproject.toml (done in T001).
+- [x] T012 [P] [US10] Create `server/init/wizard.py`: interactive setup wizard using `input()` with argparse for non-interactive `--flags`. Steps: Discord token, TTS backend, voice, CLI default, speech mode, stop word, Whisper model, terminal emulator. Pre-fill from existing config on re-run. Write to `~/.config/voice-agent/config.env`. Validate Discord token via lightweight API call.
+- [x] T013 [P] [US10] Create `server/init/mcp_register.py`: detect installed CLIs (`which claude`, `which codex`). For Claude Code: run `claude mcp add --transport http --scope user voice-agent http://127.0.0.1:{port}/mcp` or write to `~/.claude.json` directly. For Codex: append `[mcp_servers.voice-agent]` to `~/.codex/config.toml`. Check for existing entries to avoid duplicates.
+- [x] T014 [P] [US10] Create `server/init/systemd.py`: check systemd availability (`/run/systemd/system`), generate user unit file from template (WorkingDirectory, ExecStart with venv python path, Restart=always, RestartSec=10), write to `~/.config/systemd/user/voice-agent.service`, run `systemctl --user daemon-reload && enable && start`. Fall back gracefully on non-systemd systems.
+- [x] T015 [US10] Create `server/init/__init__.py` with `main()` entry point: orchestrate wizard flow (wizard → mcp_register → systemd → summary). Wire to console script entry point in pyproject.toml (done in T001).
 
 **Checkpoint**: `voice-agent init` fully functional — new users can set up in one command
 
@@ -95,11 +95,11 @@
 
 ### Implementation
 
-- [ ] T016 [P] [US4] Create `server/http_app.py`: Starlette ASGI app with `StreamableHTTPSessionManager` wrapping the MCP `Server` instance. Mount on `/mcp` route handling GET and POST. Configure host/port from `ServerConfig`. Include health check endpoint at `/health`.
-- [ ] T017 [US4] Create `server/session_manager.py`: refactor from `server/call_manager.py`. Replace single `_sessions: dict[str, CallSession]` with multi-session registry using `AgentSession` dataclass. Track `mcp_session_id` → `AgentSession` mapping. Maintain `CallSession` compatibility for voice operations. Add `register_session()`, `unregister_session()`, `get_session_by_mcp_id()`, `list_active_sessions()`, auto-name sessions from directory basename with collision auto-suffix.
-- [ ] T018 [US4] Update `server/main.py` for dual-transport startup: add `--transport` CLI flag (default "http"). In HTTP mode: create Starlette app from `http_app.py`, run with uvicorn. In stdio mode: use existing `mcp.server.stdio.stdio_server()`. Both modes share the same `Server` instance, `SessionManager`, Discord bot thread, and TTS/STT pipelines. Add `voice-agent serve` entry point.
-- [ ] T019 [US4] Add `list_sessions` MCP tool: register schema in `_TOOLS`, dispatch to `SessionManager.list_active_sessions()`. Return session list per contract (session_id, name, client_type, directory, voice, status, spawn_mode, started_at, queued message info).
-- [ ] T020 [US4] Migrate tool handlers from `CallManager` to `SessionManager`: update `_dispatch()` to use `SessionManager` methods. Ensure `initiate_call`, `continue_call`, `speak_to_user`, `end_call` work through the new session registry. Keep backward compatibility with existing `call_id` parameter.
+- [x] T016 [P] [US4] Create `server/http_app.py`: Starlette ASGI app with `StreamableHTTPSessionManager` wrapping the MCP `Server` instance. Mount on `/mcp` route handling GET and POST. Configure host/port from `ServerConfig`. Include health check endpoint at `/health`.
+- [x] T017 [US4] Create `server/session_manager.py`: refactor from `server/call_manager.py`. Replace single `_sessions: dict[str, CallSession]` with multi-session registry using `AgentSession` dataclass. Track `mcp_session_id` → `AgentSession` mapping. Maintain `CallSession` compatibility for voice operations. Add `register_session()`, `unregister_session()`, `get_session_by_mcp_id()`, `list_active_sessions()`, auto-name sessions from directory basename with collision auto-suffix.
+- [x] T018 [US4] Update `server/main.py` for dual-transport startup: add `--transport` CLI flag (default "http"). In HTTP mode: create Starlette app from `http_app.py`, run with uvicorn. In stdio mode: use existing `mcp.server.stdio.stdio_server()`. Both modes share the same `Server` instance, `SessionManager`, Discord bot thread, and TTS/STT pipelines. Add `voice-agent serve` entry point.
+- [x] T019 [US4] Add `list_sessions` MCP tool: register schema in `_TOOLS`, dispatch to `SessionManager.list_active_sessions()`. Return session list per contract (session_id, name, client_type, directory, voice, status, spawn_mode, started_at, queued message info).
+- [x] T020 [US4] Migrate tool handlers from `CallManager` to `SessionManager`: update `_dispatch()` to use `SessionManager` methods. Ensure `initiate_call`, `continue_call`, `speak_to_user`, `end_call` work through the new session registry. Keep backward compatibility with existing `call_id` parameter.
 
 **Checkpoint**: HTTP transport works — multiple clients connect simultaneously, stdio retained as fallback
 
@@ -115,9 +115,9 @@
 
 ### Implementation
 
-- [ ] T021 [P] [US5] Create `server/spawn.py`: `TerminalDetector` class with detection chain (config override → `x-terminal-emulator` → `$TERMINAL` → PATH scan for gnome-terminal, konsole, kitty, alacritty, wezterm, foot, xterm). `SpawnManager` class: `spawn_session(directory, cli, voice, headless, user_id) -> AgentSession`. Validate directory exists, CLI binary in PATH. Build CLI launch command with MCP config pointing to voice server HTTP endpoint. Launch via `subprocess.Popen` in detected terminal (or headless). Track PID. Per-emulator launch flags (gnome-terminal `--`, kitty no `-e`, wezterm `start --`).
-- [ ] T022 [US5] Add `/spawn` Discord slash command in `server/discord_bot.py`: parameters `directory` (required), `cli` (optional, default from config), `voice` (optional), `headless` (optional bool). Validate inputs, call `SpawnManager.spawn_session()`, respond with ephemeral message. Register `SpawnManager` reference on bot. Wire user's voice channel at spawn time for callback target.
-- [ ] T023 [US5] Wire spawn into server startup in `server/main.py`: create `SpawnManager` with config, pass to `SessionManager` and `discord_bot`. Ensure spawned agent's `initiate_call` auto-detects user's voice channel (leveraging US3).
+- [x] T021 [P] [US5] Create `server/spawn.py`: `TerminalDetector` class with detection chain (config override → `x-terminal-emulator` → `$TERMINAL` → PATH scan for gnome-terminal, konsole, kitty, alacritty, wezterm, foot, xterm). `SpawnManager` class: `spawn_session(directory, cli, voice, headless, user_id) -> AgentSession`. Validate directory exists, CLI binary in PATH. Build CLI launch command with MCP config pointing to voice server HTTP endpoint. Launch via `subprocess.Popen` in detected terminal (or headless). Track PID. Per-emulator launch flags (gnome-terminal `--`, kitty no `-e`, wezterm `start --`).
+- [x] T022 [US5] Add `/spawn` Discord slash command in `server/discord_bot.py`: parameters `directory` (required), `cli` (optional, default from config), `voice` (optional), `headless` (optional bool). Validate inputs, call `SpawnManager.spawn_session()`, respond with ephemeral message. Register `SpawnManager` reference on bot. Wire user's voice channel at spawn time for callback target.
+- [x] T023 [US5] Wire spawn into server startup in `server/main.py`: create `SpawnManager` with config, pass to `SessionManager` and `discord_bot`. Ensure spawned agent's `initiate_call` auto-detects user's voice channel (leveraging US3).
 
 **Checkpoint**: `/spawn` works — terminal opens, agent starts, calls user back
 
@@ -133,8 +133,8 @@
 
 ### Implementation
 
-- [ ] T024 [P] [US6] Create `server/voice_pool.py`: `VoicePool` class wrapping `VoiceProfileRegistry`. Initialize with curated pool voices from config (or sensible defaults from English preset speakers: Ryan, Aiden). Track assignments (session_id → voice_name). Methods: `assign_voice(session_id, requested_voice=None) -> str`, `release_voice(session_id)`, `get_system_voice() -> str`. Assignment logic: single session = default voice; explicit request honored if available; else next unassigned; all used = reuse with warning.
-- [ ] T025 [US6] Integrate `VoicePool` into `SessionManager` in `server/session_manager.py`: on session registration, assign voice from pool. On session removal, release voice. Pass assigned voice to TTS calls. When only one session active, skip pool. Wire system voice for switchboard use.
+- [x] T024 [P] [US6] Create `server/voice_pool.py`: `VoicePool` class wrapping `VoiceProfileRegistry`. Initialize with curated pool voices from config (or sensible defaults from English preset speakers: Ryan, Aiden). Track assignments (session_id → voice_name). Methods: `assign_voice(session_id, requested_voice=None) -> str`, `release_voice(session_id)`, `get_system_voice() -> str`. Assignment logic: single session = default voice; explicit request honored if available; else next unassigned; all used = reuse with warning.
+- [x] T025 [US6] Integrate `VoicePool` into `SessionManager` in `server/session_manager.py`: on session registration, assign voice from pool. On session removal, release voice. Pass assigned voice to TTS calls. When only one session active, skip pool. Wire system voice for switchboard use.
 
 **Checkpoint**: Concurrent sessions have distinct voices — user can tell them apart
 
@@ -150,13 +150,13 @@
 
 ### Implementation
 
-- [ ] T026 [P] [US7] Create `server/switchboard.py`: `MessageQueue` class (per-session, max depth from config). `Switchboard` class: `enqueue_agent_message(session_id, content)`, `enqueue_user_message(session_id, content)` (cold call), `get_pending_announcements() -> list[QueuedMessage]`, `deliver_next_message(session_id) -> QueuedMessage | None`. Before listening, check queue and announce via System Voice TTS. Prefix messages with session name when multiple sessions active. Track last-speaker session for default routing.
-- [ ] T027 [P] [US7] Create `server/router.py`: `RouterIntent` dataclass (intent enum, target_session, message_content, navigation_action, confidence). `IntentRouter` class: `classify(transcript, active_sessions) -> RouterIntent`. Build prompt with active session names and 4 intent definitions. Call LLM via httpx (OpenAI-compatible chat completions with tool-calling). Support backends: openrouter (API key), codex_oauth (read `~/.codex/auth.json` JWT), openai_compatible (custom base URL). Fuzzy session name matching via `thefuzz.process.extractOne` with `token_sort_ratio` scorer, threshold 75. Fallback to `reply_current` on timeout/error.
-- [ ] T028 [P] [US7] Create `server/check_messages.py`: `check_messages` MCP tool implementation. Query `Switchboard` for pending user→agent messages for the calling session. Return as structured JSON per contract. Mark messages as delivered.
-- [ ] T029 [US7] Add `check_messages` MCP tool to `server/main.py`: register tool schema in `_TOOLS`, add dispatch case routing to `check_messages.py` handler. Pass `Switchboard` reference.
-- [ ] T030 [US7] Create `server/hooks/check_voice_queue.sh`: PostToolUse hook script for Claude Code. Check message queue file/socket (e.g., `/tmp/voice-agent-queue-{session_id}`). If messages exist, output JSON with `additionalContext` telling agent to call `check_messages`. If no messages, output empty JSON (zero overhead). Make executable.
-- [ ] T031 [US7] Integrate switchboard into `SessionManager` in `server/session_manager.py`: update `continue_call` flow to check switchboard queue before listening, announce pending messages via System Voice TTS, route user replies through `IntentRouter` (if enabled) or default to last-speaker. Update `initiate_call` to register with switchboard. Update `end_call` to drain and clean up session queue.
-- [ ] T032 [US7] Add `/mode` router configuration: when router is enabled, the `/mode` command or config controls it. No new slash command needed — router is server config. Ensure FIFO fallback when router disabled.
+- [x] T026 [P] [US7] Create `server/switchboard.py`: `MessageQueue` class (per-session, max depth from config). `Switchboard` class: `enqueue_agent_message(session_id, content)`, `enqueue_user_message(session_id, content)` (cold call), `get_pending_announcements() -> list[QueuedMessage]`, `deliver_next_message(session_id) -> QueuedMessage | None`. Before listening, check queue and announce via System Voice TTS. Prefix messages with session name when multiple sessions active. Track last-speaker session for default routing.
+- [x] T027 [P] [US7] Create `server/router.py`: `RouterIntent` dataclass (intent enum, target_session, message_content, navigation_action, confidence). `IntentRouter` class: `classify(transcript, active_sessions) -> RouterIntent`. Build prompt with active session names and 4 intent definitions. Call LLM via httpx (OpenAI-compatible chat completions with tool-calling). Support backends: openrouter (API key), codex_oauth (read `~/.codex/auth.json` JWT), openai_compatible (custom base URL). Fuzzy session name matching via `thefuzz.process.extractOne` with `token_sort_ratio` scorer, threshold 75. Fallback to `reply_current` on timeout/error.
+- [x] T028 [P] [US7] Create `server/check_messages.py`: `check_messages` MCP tool implementation. Query `Switchboard` for pending user→agent messages for the calling session. Return as structured JSON per contract. Mark messages as delivered.
+- [x] T029 [US7] Add `check_messages` MCP tool to `server/main.py`: register tool schema in `_TOOLS`, add dispatch case routing to `check_messages.py` handler. Pass `Switchboard` reference.
+- [x] T030 [US7] Create `server/hooks/check_voice_queue.sh`: PostToolUse hook script for Claude Code. Check message queue file/socket (e.g., `/tmp/voice-agent-queue-{session_id}`). If messages exist, output JSON with `additionalContext` telling agent to call `check_messages`. If no messages, output empty JSON (zero overhead). Make executable.
+- [x] T031 [US7] Integrate switchboard into `SessionManager` in `server/session_manager.py`: update `continue_call` flow to check switchboard queue before listening, announce pending messages via System Voice TTS, route user replies through `IntentRouter` (if enabled) or default to last-speaker. Update `initiate_call` to register with switchboard. Update `end_call` to drain and clean up session queue.
+- [x] T032 [US7] Add `/mode` router configuration: when router is enabled, the `/mode` command or config controls it. No new slash command needed — router is server config. Ensure FIFO fallback when router disabled.
 
 **Checkpoint**: Full switchboard operational — multi-session routing, cold calls, System Voice announcements
 
@@ -172,8 +172,8 @@
 
 ### Implementation
 
-- [ ] T033 [P] [US8] Add `/sessions` (no-flags = active) and `/kill` Discord slash commands in `server/discord_bot.py`: `/sessions` with no parameters lists active spawned sessions from `SessionManager.list_active_sessions()` showing name, client type, voice, status, start time, queued messages. `/kill session:<string>` terminates a session by name or ID — calls `SpawnManager.kill_session()` which sends SIGTERM to process, kills terminal PID, removes from session registry, releases voice.
-- [ ] T034 [US8] Add `kill_session(session_name_or_id)` to `server/spawn.py` `SpawnManager`: find session by name (fuzzy match) or ID, send SIGTERM to process PID, kill terminal PID if interactive, call `SessionManager.unregister_session()`. Handle already-exited processes gracefully.
+- [x] T033 [P] [US8] Add `/sessions` (no-flags = active) and `/kill` Discord slash commands in `server/discord_bot.py`: `/sessions` with no parameters lists active spawned sessions from `SessionManager.list_active_sessions()` showing name, client type, voice, status, start time, queued messages. `/kill session:<string>` terminates a session by name or ID — calls `SpawnManager.kill_session()` which sends SIGTERM to process, kills terminal PID, removes from session registry, releases voice.
+- [x] T034 [US8] Add `kill_session(session_name_or_id)` to `server/spawn.py` `SpawnManager`: find session by name (fuzzy match) or ID, send SIGTERM to process PID, kill terminal PID if interactive, call `SessionManager.unregister_session()`. Handle already-exited processes gracefully.
 
 **Checkpoint**: Session management works — users can see and kill spawned agents
 
@@ -189,10 +189,10 @@
 
 ### Implementation
 
-- [ ] T035 [P] [US9] Create `server/session_browser.py`: `SessionBrowser` class. `list_claude_sessions(directory: str) -> list[SessionMetadata]`: encode path (`/` → `-`, prepend `-`), read `~/.claude/projects/<encoded>/sessions-index.json`, parse entries into `SessionMetadata` dataclass. `list_codex_sessions(directory: str | None) -> list[SessionMetadata]`: glob `~/.codex/sessions/*/*/*/rollout-*.jsonl`, read first line of each, parse `session_meta` payload, filter by `cwd` if directory provided. `list_recent(n: int, cli_filter: str | None) -> list[SessionMetadata]`: merge both sources, sort by timestamp desc, return top N. `detect_cli(session_id: str) -> str`: check both storage locations to determine if Claude or Codex.
-- [ ] T036 [US9] Add `/sessions --directory` and `/sessions --recent` variants to `/sessions` Discord slash command in `server/discord_bot.py`: when `directory` parameter provided, call `SessionBrowser.list_claude_sessions()` (or codex if `--cli codex`). When `recent` parameter provided (default 10), call `SessionBrowser.list_recent()`. Format output per contract with session ID, summary, timestamp, git branch.
-- [ ] T037 [US9] Add `/resume` Discord slash command in `server/discord_bot.py`: parameter `session_id` (required), `voice` (optional), `headless` (optional). Use `SessionBrowser.detect_cli()` to determine CLI. Build resume command: `claude -r "<sessionId>"` for Claude Code, `codex resume <threadId>` for Codex. Launch via `SpawnManager.spawn_session()` with resume flag. Agent callbacks with restored context.
-- [ ] T038 [US9] Handle edge cases in `server/session_browser.py`: corrupted JSONL files (catch JSON parse errors, skip), missing `~/.claude/` or `~/.codex/` directories (return empty list, no crash), deleted project directories (warn but include session).
+- [x] T035 [P] [US9] Create `server/session_browser.py`: `SessionBrowser` class. `list_claude_sessions(directory: str) -> list[SessionMetadata]`: encode path (`/` → `-`, prepend `-`), read `~/.claude/projects/<encoded>/sessions-index.json`, parse entries into `SessionMetadata` dataclass. `list_codex_sessions(directory: str | None) -> list[SessionMetadata]`: glob `~/.codex/sessions/*/*/*/rollout-*.jsonl`, read first line of each, parse `session_meta` payload, filter by `cwd` if directory provided. `list_recent(n: int, cli_filter: str | None) -> list[SessionMetadata]`: merge both sources, sort by timestamp desc, return top N. `detect_cli(session_id: str) -> str`: check both storage locations to determine if Claude or Codex.
+- [x] T036 [US9] Add `/sessions --directory` and `/sessions --recent` variants to `/sessions` Discord slash command in `server/discord_bot.py`: when `directory` parameter provided, call `SessionBrowser.list_claude_sessions()` (or codex if `--cli codex`). When `recent` parameter provided (default 10), call `SessionBrowser.list_recent()`. Format output per contract with session ID, summary, timestamp, git branch.
+- [x] T037 [US9] Add `/resume` Discord slash command in `server/discord_bot.py`: parameter `session_id` (required), `voice` (optional), `headless` (optional). Use `SessionBrowser.detect_cli()` to determine CLI. Build resume command: `claude -r "<sessionId>"` for Claude Code, `codex resume <threadId>` for Codex. Launch via `SpawnManager.spawn_session()` with resume flag. Agent callbacks with restored context.
+- [x] T038 [US9] Handle edge cases in `server/session_browser.py`: corrupted JSONL files (catch JSON parse errors, skip), missing `~/.claude/` or `~/.codex/` directories (return empty list, no crash), deleted project directories (warn but include session).
 
 **Checkpoint**: Session browsing and resume works — users can find and resume any previous session
 
@@ -202,11 +202,11 @@
 
 **Purpose**: Integration testing, edge case hardening, documentation
 
-- [ ] T039 Update `.env.example` with all new environment variables (SPEECH_MODE, STOP_WORD, DEFAULT_CLI, TERMINAL_EMULATOR, SERVER_HOST, SERVER_PORT, ROUTER_ENABLED, ROUTER_BACKEND, ROUTER_MODEL, ROUTER_API_KEY, MAX_QUEUE_DEPTH, VOICE_POOL, SYSTEM_VOICE)
-- [ ] T040 [P] Update `.mcp.json` to include HTTP transport option alongside existing stdio config
-- [ ] T041 [P] Update `CLAUDE.md` with new architecture overview, new modules, new env vars, new commands, and updated running instructions
-- [ ] T042 Validate all edge cases from spec: stop word mid-sentence, missing CLI binary, no terminal emulator, invalid directory, user leaves voice channel during callback, queue overflow, router timeout fallback, duplicate session names, corrupted session files
-- [ ] T043 Run `specs/001-voice-qol-features/quickstart.md` validation: verify setup instructions, run commands, confirm server starts in both transport modes
+- [x] T039 Update `.env.example` with all new environment variables (SPEECH_MODE, STOP_WORD, DEFAULT_CLI, TERMINAL_EMULATOR, SERVER_HOST, SERVER_PORT, ROUTER_ENABLED, ROUTER_BACKEND, ROUTER_MODEL, ROUTER_API_KEY, MAX_QUEUE_DEPTH, VOICE_POOL, SYSTEM_VOICE)
+- [x] T040 [P] Update `.mcp.json` to include HTTP transport option alongside existing stdio config
+- [x] T041 [P] Update `CLAUDE.md` with new architecture overview, new modules, new env vars, new commands, and updated running instructions
+- [x] T042 Validate all edge cases from spec: stop word mid-sentence, missing CLI binary, no terminal emulator, invalid directory, user leaves voice channel during callback, queue overflow, router timeout fallback, duplicate session names, corrupted session files
+- [x] T043 Run `specs/001-voice-qol-features/quickstart.md` validation: verify setup instructions, run commands, confirm server starts in both transport modes
 
 ---
 

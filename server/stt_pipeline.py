@@ -26,6 +26,8 @@ from server.vad import SpeechDetector, SpeechEvent
 if TYPE_CHECKING:
     import discord
 
+    from server.speech_mode import SpeechModeManager
+
 log = logging.getLogger(__name__)
 
 # How often we drain the audio sink and feed it to the VAD (seconds)
@@ -56,11 +58,17 @@ class STTPipeline:
         user_id: str,
         custom_vocab: list[str] | None = None,
         timeout_s: float = 60.0,
+        speech_mode: SpeechModeManager | None = None,
     ) -> str:
         """Listen for a single utterance and return the corrected transcript.
 
         Blocks until the user speaks and then stops speaking (silence detected),
         or until ``timeout_s`` elapses with no speech.
+
+        In **stop_token** mode (when ``speech_mode`` is set and active), the
+        pipeline accumulates multiple VAD segments until the user says the
+        configured stop word at the end of a segment, or until
+        ``max_timeout_s`` elapses.
 
         Args:
             voice_client: The connected discord.py VoiceClient (must be a
@@ -69,16 +77,36 @@ class STTPipeline:
             user_id: String identifier for loading the user's corrections.
             custom_vocab: Optional list of domain terms to bias Whisper toward.
             timeout_s: Maximum seconds to wait for speech before giving up.
+            speech_mode: Optional SpeechModeManager; when set and in stop_token
+                mode, segments are accumulated until the stop word is spoken.
 
         Returns:
             The corrected transcript string, or an empty string if no speech
             was detected within the timeout.
         """
-        log.info("STT listen() called for user=%s (id=%s)", user, user_id)
+        # Determine if we should use stop_token accumulation
+        use_stop_token = speech_mode is not None and speech_mode.is_stop_token()
+        if use_stop_token:
+            return await self._listen_stop_token(
+                voice_client, user, user_id, custom_vocab, speech_mode,
+            )
+        return await self._listen_single(
+            voice_client, user, user_id, custom_vocab, timeout_s,
+        )
+
+    async def _listen_single(
+        self,
+        voice_client: discord.VoiceClient,
+        user: discord.Member | discord.User,
+        user_id: str,
+        custom_vocab: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> str:
+        """Original single-segment listen (pause mode)."""
+        log.info("STT listen() called for user=%s (id=%s) [pause mode]", user, user_id)
         sink = UserAudioSink(target_user=user)
         self._vad.reset()
 
-        # Attach the sink to the voice client
         log.info("Attaching audio sink to voice client (type=%s)", type(voice_client).__name__)
         try:
             voice_client.listen(sink)
@@ -93,7 +121,6 @@ class STTPipeline:
         try:
             speech_audio = await self._wait_for_speech(sink, timeout_s, start_time)
         finally:
-            # Always detach the sink
             log.info("Detaching audio sink (elapsed=%.1fs, got_audio=%s)",
                      time.monotonic() - start_time, speech_audio is not None)
             try:
@@ -102,26 +129,104 @@ class STTPipeline:
                 pass
             sink.cleanup()
 
-        # DEBUG: Always save received audio to a WAV file for analysis
-        if hasattr(self, '_debug_all_audio') and self._debug_all_audio is not None:
-            try:
-                import soundfile as sf
-                debug_path = "/tmp/voice-agent-debug.wav"
-                sf.write(debug_path, self._debug_all_audio, 16000)
-                log.info("DEBUG: Saved %d samples (%.2fs) of raw received audio to %s",
-                         len(self._debug_all_audio), len(self._debug_all_audio) / 16000, debug_path)
-            except Exception:
-                log.exception("Failed to save debug audio")
-            self._debug_all_audio = None
+        self._save_debug_audio()
 
         if speech_audio is None or len(speech_audio) == 0:
             log.info("No speech detected within %.1fs timeout", timeout_s)
             return ""
 
+        return await self._transcribe_and_correct(speech_audio, user_id, custom_vocab)
+
+    async def _listen_stop_token(
+        self,
+        voice_client: discord.VoiceClient,
+        user: discord.Member | discord.User,
+        user_id: str,
+        custom_vocab: list[str] | None,
+        speech_mode: SpeechModeManager,
+    ) -> str:
+        """Accumulate segments until the stop word is spoken or max timeout."""
+        max_timeout = speech_mode.max_timeout_s
+        log.info(
+            "STT listen() called for user=%s (id=%s) [stop_token mode, "
+            "stop_word=%r, max_timeout=%.0fs]",
+            user, user_id, speech_mode.stop_word, max_timeout,
+        )
+
+        accumulated_transcripts: list[str] = []
+        overall_start = time.monotonic()
+
+        while True:
+            elapsed = time.monotonic() - overall_start
+            remaining = max_timeout - elapsed
+            if remaining <= 0:
+                log.info("Stop-token max timeout (%.0fs) reached, returning accumulated", max_timeout)
+                break
+
+            # Listen for a single segment with the remaining time as timeout
+            sink = UserAudioSink(target_user=user)
+            self._vad.reset()
+
+            try:
+                voice_client.listen(sink)
+            except Exception:
+                log.exception("Failed to attach audio sink in stop_token loop")
+                break
+
+            speech_audio: np.ndarray | None = None
+            seg_start = time.monotonic()
+
+            try:
+                speech_audio = await self._wait_for_speech(sink, remaining, seg_start)
+            finally:
+                try:
+                    voice_client.stop_listening()
+                except Exception:
+                    pass
+                sink.cleanup()
+
+            self._save_debug_audio()
+
+            if speech_audio is None or len(speech_audio) == 0:
+                log.info("No speech in stop_token segment (timeout or silence)")
+                break
+
+            # Transcribe this segment
+            transcript = await self._transcribe_and_correct(speech_audio, user_id, custom_vocab)
+            if not transcript.strip():
+                continue
+
+            # Check for stop word
+            found, cleaned = speech_mode.check_stop_word(transcript)
+            if found:
+                if cleaned.strip():
+                    accumulated_transcripts.append(cleaned)
+                log.info("Stop word detected in segment, returning accumulated transcript")
+                break
+            else:
+                accumulated_transcripts.append(transcript)
+                log.info(
+                    "Segment transcribed (no stop word): %r (accumulated %d segments)",
+                    transcript, len(accumulated_transcripts),
+                )
+
+        if not accumulated_transcripts:
+            return ""
+
+        full_transcript = " ".join(accumulated_transcripts)
+        log.info("Stop-token accumulated transcript: %r", full_transcript)
+        return full_transcript
+
+    async def _transcribe_and_correct(
+        self,
+        speech_audio: np.ndarray,
+        user_id: str,
+        custom_vocab: list[str] | None = None,
+    ) -> str:
+        """Transcribe audio with Whisper and apply LLM corrections."""
         duration = len(speech_audio) / 16_000
         log.info("Speech captured: %.2fs of audio", duration)
 
-        # Transcribe
         corrections = self._corrections.get_corrections(user_id)
         initial_prompt = self._transcriber.build_initial_prompt(
             custom_vocab or [], corrections
@@ -133,12 +238,24 @@ class STTPipeline:
         if not raw_text.strip():
             return ""
 
-        # Apply LLM corrections
         corrected = await self._corrections.correct(raw_text, user_id)
         if corrected != raw_text:
             log.info("Corrected transcript: %r", corrected)
 
         return corrected
+
+    def _save_debug_audio(self) -> None:
+        """Save debug audio to WAV if available."""
+        if hasattr(self, '_debug_all_audio') and self._debug_all_audio is not None:
+            try:
+                import soundfile as sf
+                debug_path = "/tmp/voice-agent-debug.wav"
+                sf.write(debug_path, self._debug_all_audio, 16000)
+                log.info("DEBUG: Saved %d samples (%.2fs) of raw received audio to %s",
+                         len(self._debug_all_audio), len(self._debug_all_audio) / 16000, debug_path)
+            except Exception:
+                log.exception("Failed to save debug audio")
+            self._debug_all_audio = None
 
     async def _wait_for_speech(
         self,

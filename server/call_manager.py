@@ -18,6 +18,7 @@ import discord
 from server.audio_source import StreamingAudioSource, TTSAudioSource
 from server.tts_backend import TTSBackend, preprocess as _preprocess
 from server.discord_bot import BotRunner
+from server.speech_mode import SpeechModeManager
 from server.stt_pipeline import STTPipeline
 
 log = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ class CallManager:
         bot_runner: BotRunner,
         stt_pipeline: STTPipeline,
         tts_engine: TTSBackend,
+        speech_mode_manager: SpeechModeManager | None = None,
     ) -> None:
         """Initialise the manager.
 
@@ -68,10 +70,12 @@ class CallManager:
             bot_runner: The running BotRunner that wraps the Discord bot.
             stt_pipeline: Shared STT pipeline (VAD + Whisper + LLM correction).
             tts_engine: Shared TTS engine (Qwen3-TTS).
+            speech_mode_manager: Optional speech mode manager for stop-token support.
         """
         self._runner = bot_runner
         self._stt = stt_pipeline
         self._tts_engine = tts_engine
+        self._speech_mode = speech_mode_manager
         # Keyed by call_id (str UUID)
         self._sessions: dict[str, CallSession] = {}
 
@@ -224,6 +228,7 @@ class CallManager:
             voice_client=voice_client,
             user=user,
             user_id=user_id,
+            speech_mode=self._speech_mode,
         )
 
     def _resolve_voice_user(

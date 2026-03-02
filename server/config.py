@@ -8,6 +8,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Fallback config path for daemon/global installs
+_GLOBAL_CONFIG_PATH = Path.home() / ".config" / "voice-agent" / "config.env"
+
 
 @dataclass
 class STTConfig:
@@ -41,6 +44,38 @@ class CorrectionConfig:
 
 
 @dataclass
+class SpeechModeConfig:
+    mode: str = "pause"  # "pause" or "stop_token"
+    stop_word: str = "over"
+    max_timeout_s: float = 60.0
+
+
+@dataclass
+class SpawnConfig:
+    default_cli: str = "claude"  # "claude" or "codex"
+    terminal_override: str = ""
+    server_url: str = "http://127.0.0.1:8765/mcp"
+
+
+@dataclass
+class RouterConfig:
+    enabled: bool = False
+    backend: str = ""  # "codex_oauth", "openrouter", "openai_compatible"
+    model: str = ""
+    api_key: str = ""
+    api_base_url: str = ""
+    codex_auth_path: str = str(Path.home() / ".codex" / "auth.json")
+    timeout_ms: int = 500
+
+
+@dataclass
+class ServerConfig:
+    host: str = "127.0.0.1"
+    port: int = 8765
+    transport: str = "http"  # "http" or "stdio"
+
+
+@dataclass
 class Config:
     discord_token: str = ""
     anthropic_api_key: str = ""
@@ -51,15 +86,32 @@ class Config:
     tts: TTSConfig = field(default_factory=TTSConfig)
     vad: VADConfig = field(default_factory=VADConfig)
     correction: CorrectionConfig = field(default_factory=CorrectionConfig)
+    speech_mode: SpeechModeConfig = field(default_factory=SpeechModeConfig)
+    spawn: SpawnConfig = field(default_factory=SpawnConfig)
+    router: RouterConfig = field(default_factory=RouterConfig)
+    server: ServerConfig = field(default_factory=ServerConfig)
+
+    # Voice pool
+    voice_pool: list[str] = field(default_factory=list)
+    system_voice: str = ""
+
+    # Switchboard
+    max_queue_depth: int = 20
 
     @classmethod
     def from_env(cls, env_file: str | Path | None = None) -> Config:
         if env_file:
             load_dotenv(env_file)
-        else:
+        elif Path(".env").exists():
             load_dotenv()
+        elif _GLOBAL_CONFIG_PATH.exists():
+            load_dotenv(_GLOBAL_CONFIG_PATH)
 
         channel_id = os.getenv("DISCORD_CHANNEL_ID")
+
+        # Parse voice pool from comma-separated list
+        pool_raw = os.getenv("VOICE_POOL", "")
+        voice_pool = [v.strip() for v in pool_raw.split(",") if v.strip()] if pool_raw else []
 
         return cls(
             discord_token=os.getenv("DISCORD_TOKEN", ""),
@@ -87,6 +139,39 @@ class Config:
             correction=CorrectionConfig(
                 model=os.getenv("CORRECTION_MODEL", "claude-haiku-4-5-20251001"),
             ),
+            speech_mode=SpeechModeConfig(
+                mode=os.getenv("SPEECH_MODE", "pause"),
+                stop_word=os.getenv("STOP_WORD", "over"),
+                max_timeout_s=float(os.getenv("SPEECH_MAX_TIMEOUT_S", "60.0")),
+            ),
+            spawn=SpawnConfig(
+                default_cli=os.getenv("DEFAULT_CLI", "claude"),
+                terminal_override=os.getenv("TERMINAL_EMULATOR", ""),
+                server_url=os.getenv(
+                    "SERVER_URL",
+                    f"http://{os.getenv('SERVER_HOST', '127.0.0.1')}:{os.getenv('SERVER_PORT', '8765')}/mcp",
+                ),
+            ),
+            router=RouterConfig(
+                enabled=os.getenv("ROUTER_ENABLED", "false").lower() in ("true", "1", "yes"),
+                backend=os.getenv("ROUTER_BACKEND", ""),
+                model=os.getenv("ROUTER_MODEL", ""),
+                api_key=os.getenv("ROUTER_API_KEY", ""),
+                api_base_url=os.getenv("ROUTER_API_BASE_URL", ""),
+                codex_auth_path=os.getenv(
+                    "ROUTER_CODEX_AUTH_PATH",
+                    str(Path.home() / ".codex" / "auth.json"),
+                ),
+                timeout_ms=int(os.getenv("ROUTER_TIMEOUT_MS", "500")),
+            ),
+            server=ServerConfig(
+                host=os.getenv("SERVER_HOST", "127.0.0.1"),
+                port=int(os.getenv("SERVER_PORT", "8765")),
+                transport=os.getenv("SERVER_TRANSPORT", "http"),
+            ),
+            voice_pool=voice_pool,
+            system_voice=os.getenv("SYSTEM_VOICE", ""),
+            max_queue_depth=int(os.getenv("MAX_QUEUE_DEPTH", "20")),
         )
 
     def validate(self) -> list[str]:
@@ -101,4 +186,18 @@ class Config:
             errors.append("ELEVENLABS_API_KEY is required when TTS_BACKEND=elevenlabs")
         if self.tts.backend == "elevenlabs" and not self.tts.elevenlabs_voice_id:
             errors.append("ELEVENLABS_VOICE_ID is required when TTS_BACKEND=elevenlabs")
+        if self.speech_mode.mode not in ("pause", "stop_token"):
+            errors.append(
+                f"SPEECH_MODE must be 'pause' or 'stop_token', got '{self.speech_mode.mode}'"
+            )
+        if self.spawn.default_cli not in ("claude", "codex"):
+            errors.append(
+                f"DEFAULT_CLI must be 'claude' or 'codex', got '{self.spawn.default_cli}'"
+            )
+        if self.server.transport not in ("http", "stdio"):
+            errors.append(
+                f"SERVER_TRANSPORT must be 'http' or 'stdio', got '{self.server.transport}'"
+            )
+        if self.router.enabled and not self.router.backend:
+            errors.append("ROUTER_BACKEND is required when ROUTER_ENABLED=true")
         return errors
