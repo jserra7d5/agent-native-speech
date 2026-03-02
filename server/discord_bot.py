@@ -512,8 +512,9 @@ class VoiceBot(commands.Bot):
                     rel = "unknown"
 
                 line = (
-                    f"{idx}. **{s['session_name']}** ({s['client_type']}, "
-                    f"{s['status']}) — voice: {s['voice']} — started {rel}"
+                    f"{idx}. **{s['session_name']}** (`{s['session_id'][:8]}`) "
+                    f"— {s['client_type']}, {s['status']} "
+                    f"— voice: {s['voice']} — started {rel}"
                 )
                 count = s.get("queued_message_count", 0)
                 if count:
@@ -542,7 +543,9 @@ class VoiceBot(commands.Bot):
             active = self._session_manager.list_active_sessions()
             matched = None
             for s in active:
-                if s["session_id"] == session or s["session_name"] == session:
+                if (s["session_id"] == session
+                        or s["session_name"] == session
+                        or s["session_id"].startswith(session)):
                     matched = s
                     break
 

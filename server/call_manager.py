@@ -499,14 +499,25 @@ class CallManager:
         self._post_to_text_channel(session, "assistant", message)
 
         duration = time.monotonic() - session.started_at
-
-        # Leave the voice channel via the bot's event loop
-        self._runner.run_coroutine(
-            self._runner.bot.leave_voice_channel(session.channel_id)
-        )
+        channel_id = session.channel_id
 
         del self._sessions[call_id]
-        log.info("Call %s ended; duration=%.1fs", call_id, duration)
+
+        # Only leave the voice channel if no other sessions are using it
+        others_on_channel = any(
+            s.channel_id == channel_id for s in self._sessions.values()
+        )
+        if others_on_channel:
+            log.info(
+                "Call %s ended; duration=%.1fs (staying in channel %d — other sessions active)",
+                call_id, duration, channel_id,
+            )
+        else:
+            self._runner.run_coroutine(
+                self._runner.bot.leave_voice_channel(channel_id)
+            )
+            log.info("Call %s ended; duration=%.1fs (left channel %d)", call_id, duration, channel_id)
+
         return {"duration_seconds": round(duration, 2)}
 
     # ------------------------------------------------------------------

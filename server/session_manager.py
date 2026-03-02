@@ -330,17 +330,18 @@ class SessionManager:
     async def end_call(
         self, call_id: str, message: str
     ) -> dict[str, Any]:
-        """End a call and clean up."""
+        """End a call and clean up the agent session."""
         # Find the agent session before ending (CallManager removes it)
         agent_session = self._find_session_by_call_id(call_id)
         voice = self.resolve_voice(agent_session.session_id) if agent_session else None
         result = await self._call_manager.end_call(
             call_id=call_id, message=message, voice=voice
         )
+        # Unregister the agent session — once the call ends, the voice
+        # session is over.  The spawned CLI process may still be running
+        # but it's no longer a voice session.
         if agent_session:
-            agent_session.call_session = None
-            agent_session.status = "idle"
-            agent_session.last_activity = time.time()
+            self.unregister_session(agent_session.session_id)
         return result
 
     # ------------------------------------------------------------------
