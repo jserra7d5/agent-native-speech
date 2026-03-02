@@ -3,9 +3,9 @@
 Detects available terminal emulators and launches Claude Code or Codex CLI
 sessions that connect back to the voice agent server via MCP HTTP transport.
 
-Claude Code's ``--mcp-config`` flag prevents TUI rendering in terminal
-emulators, so we write the voice-agent MCP entry to the global
-``~/.claude/.mcp.json`` instead.  Global MCP servers are always trusted.
+MCP config is registered globally for each CLI:
+- Claude Code: ``~/.claude/.mcp.json`` (HTTP entry with type field)
+- Codex CLI: ``~/.codex/config.toml`` (via ``codex mcp add``)
 """
 
 from __future__ import annotations
@@ -163,10 +163,12 @@ class SpawnManager:
         if not shutil.which(cli):
             raise ValueError(f"CLI not found: {cli} is not installed")
 
-        # Ensure the global ~/.claude/.mcp.json has the voice-agent HTTP
-        # entry so the spawned Claude can connect back to us.
+        # Ensure the global MCP config has the voice-agent HTTP entry so
+        # the spawned agent can connect back to us.
         if cli == "claude":
             self._ensure_global_mcp_config()
+        elif cli == "codex":
+            self._ensure_codex_mcp_config()
 
         # Build the CLI command
         cli_command = self._build_cli_command(cli, directory, resume_session_id, headless)
@@ -295,15 +297,26 @@ class SpawnManager:
                 cmd.append(_CALLBACK_PROMPT)
             return cmd
         elif cli == "codex":
+            # MCP config is provided via global ~/.codex/config.toml
+            # (added with `codex mcp add`).
             if resume_session_id:
                 return [
                     "codex", "resume", resume_session_id,
-                    "--mcp-config", f"voice-agent={self._server_url}",
+                    "--yolo",
+                    "-C", directory,
+                    _CALLBACK_PROMPT,
+                ]
+            if headless:
+                return [
+                    "codex", "exec",
+                    "--yolo",
+                    "-C", directory,
                     _CALLBACK_PROMPT,
                 ]
             return [
                 "codex",
-                "--mcp-config", f"voice-agent={self._server_url}",
+                "--yolo",
+                "-C", directory,
                 _CALLBACK_PROMPT,
             ]
         else:
@@ -344,6 +357,44 @@ class SpawnManager:
             json.dump(config_data, f, indent=2)
             f.write("\n")
         log.info("Wrote voice-agent HTTP entry to %s", mcp_path)
+
+    def _ensure_codex_mcp_config(self) -> None:
+        """Ensure ``~/.codex/config.toml`` has a voice-agent HTTP entry.
+
+        Uses ``codex mcp add`` which is idempotent and handles TOML formatting.
+        Falls back to direct file write if the CLI call fails.
+        """
+        try:
+            result = subprocess.run(
+                ["codex", "mcp", "add", "voice-agent", "--url", self._server_url],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                log.info("Ensured voice-agent MCP in codex config")
+                return
+            log.warning("codex mcp add failed: %s", result.stderr.strip())
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            log.warning("Could not run 'codex mcp add', writing config directly")
+
+        # Fallback: write directly to config.toml
+        config_path = os.path.join(os.path.expanduser("~"), ".codex", "config.toml")
+        toml_entry = (
+            '\n[mcp_servers.voice-agent]\n'
+            f'url = "{self._server_url}"\n'
+        )
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                content = f.read()
+            if "mcp_servers.voice-agent" in content:
+                log.debug("voice-agent already in %s", config_path)
+                return
+            with open(config_path, "a") as f:
+                f.write(toml_entry)
+        else:
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            with open(config_path, "w") as f:
+                f.write(toml_entry)
+        log.info("Wrote voice-agent entry to %s", config_path)
 
     def _build_terminal_command(
         self,
