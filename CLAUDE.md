@@ -66,3 +66,10 @@ python -c "import server.main"
 - `voices/*/prompt_cache.pt` (generated cache)
 - `data/corrections/*.json` (user data)
 - `data/sessions/` (session logs)
+
+## Active Technologies
+- Python 3.14 (from .venv) + discord.py[voice] >=2.5, discord-ext-voice-recv >=0.5.1, mcp >=1.0, faster-whisper >=1.1.0, torch >=2.0, qwen-tts >=0.1, anthropic >=0.40, starlette (for HTTP transport), uvicorn (ASGI server), thefuzz (fuzzy session name matching) (001-voice-qol-features)
+- File-based (corrections JSON, session logs JSONL, config TOML/env). No database. (001-voice-qol-features)
+
+## Recent Changes
+- 001-voice-qol-features: Added Python 3.14 (from .venv) + discord.py[voice] >=2.5, discord-ext-voice-recv >=0.5.1, mcp >=1.0, faster-whisper >=1.1.0, torch >=2.0, qwen-tts >=0.1, anthropic >=0.40, starlette (for HTTP transport), uvicorn (ASGI server), thefuzz (fuzzy session name matching)
