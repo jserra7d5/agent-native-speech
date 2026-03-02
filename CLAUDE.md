@@ -36,11 +36,11 @@ See `config.json.example` for all settings. Legacy `.env` files still work (auto
 
 ## MCP Tools
 
-`initiate_call`, `continue_call`, `speak_to_user`, `end_call`, `add_correction`, `list_corrections`, `set_speech_mode`, `list_sessions`, `check_messages`
+`initiate_call`, `continue_call`, `speak_to_user`, `end_call`, `check_messages`
 
 ## Discord Slash Commands
 
-`/correct`, `/corrections`, `/mode`, `/stopword`, `/spawn`, `/sessions`, `/kill`, `/resume`, `/voices`
+`/correct`, `/corrections`, `/speech`, `/spawn`, `/sessions`, `/kill`, `/resume`, `/voices`
 
 ## Conventions
 

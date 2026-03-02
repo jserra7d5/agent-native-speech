@@ -282,21 +282,23 @@ class VoiceBot(commands.Bot):
             )
 
         @self.tree.command(
-            name="mode",
-            description="Set the speech completion mode (pause or stop_token)",
+            name="speech",
+            description="Configure speech mode, stop word, and clear token",
         )
         @app_commands.describe(
             mode="Speech completion mode: 'pause' (silence detection) or 'stop_token' (keyword)",
-            stop_word="Stop word for stop_token mode (e.g. 'over')",
+            stop_word="Stop word for stop_token mode (e.g. 'over', 'done')",
+            clear_token="Clear token to discard current speech buffer (e.g. 'clear', 'reset')",
         )
         @app_commands.choices(mode=[
             app_commands.Choice(name="pause", value="pause"),
             app_commands.Choice(name="stop_token", value="stop_token"),
         ])
-        async def mode_cmd(
+        async def speech_cmd(
             interaction: discord.Interaction,
-            mode: app_commands.Choice[str],
+            mode: app_commands.Choice[str] | None = None,
             stop_word: str | None = None,
+            clear_token: str | None = None,
         ) -> None:
             if self._speech_mode_manager is None:
                 await interaction.response.send_message(
@@ -304,36 +306,35 @@ class VoiceBot(commands.Bot):
                     ephemeral=True,
                 )
                 return
-            result = self._speech_mode_manager.set_mode(mode.value, stop_word=stop_word)
-            log.info(
-                "Slash /mode: user=%s set mode=%s stop_word=%s",
-                interaction.user.id, result["mode"], result["stop_word"],
-            )
-            await interaction.response.send_message(
-                f"Speech mode set to **{result['mode']}** (stop word: \"{result['stop_word']}\").",
-                ephemeral=True,
-            )
 
-        @self.tree.command(
-            name="stopword",
-            description="Change the stop word for stop_token speech mode",
-        )
-        @app_commands.describe(word="The new stop word (e.g. 'over', 'done', 'end')")
-        async def stopword_cmd(interaction: discord.Interaction, word: str) -> None:
-            if self._speech_mode_manager is None:
+            # If no args, show current settings
+            if mode is None and stop_word is None and clear_token is None:
+                current = self._speech_mode_manager.get_mode()
+                sw = self._speech_mode_manager.stop_word
+                ct = self._speech_mode_manager.clear_token
                 await interaction.response.send_message(
-                    "Speech mode manager is not available yet. Please try again shortly.",
+                    f"**Speech settings:**\n"
+                    f"- Mode: **{current}**\n"
+                    f"- Stop word: **{sw}**\n"
+                    f"- Clear token: **{ct}**",
                     ephemeral=True,
                 )
                 return
-            current_mode = self._speech_mode_manager.get_mode()
-            result = self._speech_mode_manager.set_mode(current_mode, stop_word=word)
+
+            resolved_mode = mode.value if mode else self._speech_mode_manager.get_mode()
+            result = self._speech_mode_manager.set_mode(
+                resolved_mode, stop_word=stop_word, clear_token=clear_token,
+            )
             log.info(
-                "Slash /stopword: user=%s set stop_word=%s",
-                interaction.user.id, result["stop_word"],
+                "Slash /speech: user=%s mode=%s stop_word=%s clear_token=%s",
+                interaction.user.id, result["mode"], result["stop_word"],
+                result["clear_token"],
             )
             await interaction.response.send_message(
-                f"Stop word updated to \"{result['stop_word']}\" (mode: {result['mode']}).",
+                f"**Speech settings updated:**\n"
+                f"- Mode: **{result['mode']}**\n"
+                f"- Stop word: **{result['stop_word']}**\n"
+                f"- Clear token: **{result['clear_token']}**",
                 ephemeral=True,
             )
 

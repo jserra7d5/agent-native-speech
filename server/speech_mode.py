@@ -42,20 +42,27 @@ class SpeechModeManager:
             stop_word=config.stop_word,
             max_timeout_s=config.max_timeout_s,
         )
+        self._clear_token = config.clear_token
 
     def get_mode(self) -> str:
         """Return the current mode name ("pause" or "stop_token")."""
         return self._mode.mode
 
-    def set_mode(self, mode: str, stop_word: str | None = None) -> dict[str, str]:
+    def set_mode(
+        self,
+        mode: str,
+        stop_word: str | None = None,
+        clear_token: str | None = None,
+    ) -> dict[str, str]:
         """Update the speech completion mode.
 
         Args:
             mode: "pause" or "stop_token".
             stop_word: Optional new stop word (only relevant for stop_token mode).
+            clear_token: Optional new clear token.
 
         Returns:
-            Dict with the new mode and stop_word values.
+            Dict with the new mode, stop_word, and clear_token values.
 
         Raises:
             ValueError: If mode is not "pause" or "stop_token".
@@ -65,8 +72,17 @@ class SpeechModeManager:
         self._mode.mode = mode
         if stop_word is not None:
             self._mode.stop_word = stop_word
-        log.info("Speech mode set to %r (stop_word=%r)", self._mode.mode, self._mode.stop_word)
-        return {"mode": self._mode.mode, "stop_word": self._mode.stop_word}
+        if clear_token is not None:
+            self._clear_token = clear_token
+        log.info(
+            "Speech mode set to %r (stop_word=%r, clear_token=%r)",
+            self._mode.mode, self._mode.stop_word, self._clear_token,
+        )
+        return {
+            "mode": self._mode.mode,
+            "stop_word": self._mode.stop_word,
+            "clear_token": self._clear_token,
+        }
 
     def is_stop_token(self) -> bool:
         """Return True if the current mode is stop_token."""
@@ -81,6 +97,11 @@ class SpeechModeManager:
     def stop_word(self) -> str:
         """The current stop word."""
         return self._mode.stop_word
+
+    @property
+    def clear_token(self) -> str:
+        """The current clear token."""
+        return self._clear_token
 
     def check_stop_word(self, transcript: str) -> tuple[bool, str]:
         """Check if transcript ends with the stop word.
@@ -132,7 +153,7 @@ class SpeechModeManager:
 
         # Remove trailing punctuation for comparison
         cleaned = _TRAILING_PUNCT.sub("", stripped).rstrip()
-        token = self._config.clear_token.lower()
+        token = self._clear_token.lower()
 
         # Check if the cleaned text ends with the clear token
         if cleaned.lower().endswith(token):
