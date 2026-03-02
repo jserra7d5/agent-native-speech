@@ -132,6 +132,8 @@ Switches between pause-based and stop-token-based speech completion detection.
 }
 ```
 
+**Note:** The chime settings (`chime_enabled`, `chime_frequency_hz`, `chime_duration_ms`), `clear_token`, and `stop_confirm_ms` are config-only (`speech_mode.*` in config.json) and are not exposed via this MCP tool.
+
 ### list_sessions
 
 Lists all active agent sessions connected to the voice server.

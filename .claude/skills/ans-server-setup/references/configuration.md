@@ -61,7 +61,12 @@ If no config is found, returns defaults (which will fail validation due to missi
   "speech_mode": {
     "mode": "pause",
     "stop_word": "over",
-    "max_timeout_s": 60.0
+    "max_timeout_s": 60.0,
+    "stop_confirm_ms": 1500,
+    "clear_token": "clear",
+    "chime_enabled": true,
+    "chime_frequency_hz": 880,
+    "chime_duration_ms": 150
   },
 
   "spawn": {
@@ -157,6 +162,11 @@ All config classes are in `server/config.py` and use `@dataclass` with default v
 | `mode` | `str` | `"pause"` | `speech_mode.mode` |
 | `stop_word` | `str` | `"over"` | `speech_mode.stop_word` |
 | `max_timeout_s` | `float` | `60.0` | `speech_mode.max_timeout_s` |
+| `stop_confirm_ms` | `int` | `1500` | `speech_mode.stop_confirm_ms` |
+| `clear_token` | `str` | `"clear"` | `speech_mode.clear_token` |
+| `chime_enabled` | `bool` | `True` | `speech_mode.chime_enabled` |
+| `chime_frequency_hz` | `int` | `880` | `speech_mode.chime_frequency_hz` |
+| `chime_duration_ms` | `int` | `150` | `speech_mode.chime_duration_ms` |
 
 ### `SpawnConfig` (nested as `spawn`)
 

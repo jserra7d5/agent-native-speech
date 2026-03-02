@@ -24,6 +24,7 @@ The core voice I/O loop that powers agent-native-speech. Handles everything betw
 | `server/speech_mode.py` | Pause vs stop_token completion modes | `SpeechModeManager` |
 | `server/correction.py` | Per-user correction dictionary + LLM correction | `CorrectionManager` |
 | `server/voice_profile.py` | Voice profile registry (presets + clones) | `VoiceProfile`, `VoiceProfileRegistry` |
+| `server/chime.py` | Generates sine-wave chime sounds (recording-done tone, clear two-tone descending) with caching | `generate_done_chime()`, `generate_clear_chime()` |
 
 ## Data Flow
 
@@ -84,7 +85,15 @@ Two modes control how the STT pipeline decides the user has finished speaking:
 | `pause` (default) | VAD detects silence exceeding `silence_duration_ms` | Short back-and-forth conversation |
 | `stop_token` | User says configured stop word (default: "over") | Long-form dictation or instructions |
 
-In stop_token mode, the pipeline runs an inner loop: listen for a segment, transcribe it, check for stop word at end, accumulate. Segments are joined with spaces. The stop word is stripped from the final transcript.
+In stop_token mode, the pipeline runs an inner loop: listen for a segment, transcribe it, check for clear token and stop word, accumulate. Segments are joined with spaces. The stop word is stripped from the final transcript.
+
+**Stop word silence confirmation**: In stop_token mode, detecting the stop word no longer immediately ends the listen. Instead, the pipeline calls `_confirm_silence()` and waits for `stop_confirm_ms` (default 1500ms) of silence after detection. If the user keeps talking within that window, the stop word is treated as normal speech and appended to the accumulated transcript. This prevents accidental triggering when the stop word appears mid-sentence.
+
+**Clear token**: A configurable clear token (default "clear") resets the accumulated transcript in stop_token mode. Like the stop word, it requires silence confirmation via `_confirm_silence()` before taking effect. If silence is confirmed, the transcript is reset and the `on_clear` callback fires (used for chime playback). If the user keeps talking, the clear token is treated as normal speech.
+
+**`_confirm_silence()` helper**: A method on `STTPipeline` that opens a fresh `UserAudioSink`, attaches it to the voice client, and monitors for speech within a configurable timeout window. Returns `True` if silence is confirmed (no speech detected), `False` if the user starts speaking. Used by both stop word and clear token confirmation.
+
+**`on_clear` callback**: `listen()` and `_listen_stop_token()` accept an optional `on_clear` callback parameter (`Callable[[], Awaitable[None]] | None`). When the clear token is confirmed, this callback is invoked to play the clear chime sound. `CallManager._stt_listen()` passes a lambda that plays the clear chime via `TTSAudioSource.from_audio()`.
 
 ## Audio Format Quick Reference
 
@@ -104,7 +113,7 @@ In stop_token mode, the pipeline runs an inner loop: listen for a segment, trans
 STTConfig:   backend, model, device, compute_type, elevenlabs_*
 TTSConfig:   backend, default_voice, device, voices_dir, elevenlabs_*
 VADConfig:   silence_duration_ms (default 1500), threshold (default 0.5)
-SpeechModeConfig: mode ("pause"/"stop_token"), stop_word, max_timeout_s
+SpeechModeConfig: mode ("pause"/"stop_token"), stop_word, clear_token, stop_confirm_ms, max_timeout_s
 CorrectionConfig: model (override), data_dir (Path)
 ```
 

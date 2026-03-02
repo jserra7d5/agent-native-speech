@@ -15,7 +15,13 @@ Determined at construction by `config.stt.backend`:
 Entry point called by `CallManager._stt_listen()`. Dispatches to one of two internal paths based on speech mode:
 
 - **Pause mode** (`_listen_single`): Attach sink, wait for one complete utterance (VAD start -> VAD end), transcribe, correct, return.
-- **Stop token mode** (`_listen_stop_token`): Loop of single-segment listens. Each segment is transcribed and checked for the stop word. Segments accumulate until stop word is found or `max_timeout_s` elapses.
+- **Stop token mode** (`_listen_stop_token`): Loop of single-segment listens. Each segment is transcribed and checked for the clear token and stop word (both with silence confirmation). Segments accumulate until stop word is confirmed or `max_timeout_s` elapses.
+
+Both `listen()` and `_listen_stop_token()` accept an optional `on_clear` callback parameter (`Callable[[], Awaitable[None]] | None`). When the clear token is confirmed in stop_token mode, this callback is invoked (used for chime playback).
+
+### `_confirm_silence()` Method
+
+Helper method that validates stop word or clear token detection by checking for continued silence. Opens a fresh `UserAudioSink`, attaches it to the voice client, and monitors for speech within a configurable timeout window (`stop_confirm_ms`, default 1500ms). Returns `True` if silence is confirmed (no speech detected within the window), `False` if the user starts speaking again. This prevents accidental triggering when the stop word or clear token appears naturally in mid-sentence speech.
 
 ### `_wait_for_speech()` -- The Core Poll Loop
 
@@ -193,23 +199,54 @@ Standard VAD-based: silence triggers end of utterance. Good for conversational b
 
 ### Stop Token Mode
 
-User says a keyword (default: "over") to signal they are done. Useful when the user needs to speak for longer than the silence threshold allows.
+User says a keyword (default: "over") to signal they are done. Useful when the user needs to speak for longer than the silence threshold allows. Both the stop word and the clear token require silence confirmation before taking effect.
 
 **Stop word detection** (`check_stop_word()`):
 - Case-insensitive comparison
 - Trailing punctuation stripped before checking (`.`, `,`, `!`, `?`, `;`, `:`)
 - Returns `(found: bool, cleaned_transcript: str)` where cleaned has the stop word removed
 
+**Clear token detection** (`check_clear_token()`):
+- Same rules as stop word detection (case-insensitive, punctuation-stripped)
+- Default clear token: `"clear"`
+- Returns `(found: bool, cleaned_transcript: str)` where cleaned has the clear token removed
+- When confirmed, resets the accumulated transcript and fires the `on_clear` callback
+
+**Silence confirmation** (`stop_confirm_ms`, default 1500ms):
+- After detecting either a stop word or clear token, `_confirm_silence()` is called
+- Opens a fresh audio sink and monitors for speech within the confirmation window
+- If the user stays silent: the token is confirmed and takes effect
+- If the user starts speaking: the token is cancelled and treated as normal speech
+- This prevents false positives when "over" or "clear" appear mid-sentence
+
 **Accumulation loop** in `_listen_stop_token()`:
-1. Listen for one VAD segment
-2. Transcribe and correct it
-3. Check if transcript ends with stop word
-4. If yes: strip stop word, add to accumulated, return joined
-5. If no: add to accumulated, loop
-6. On timeout or no-speech: return whatever has accumulated
+1. Listen for one VAD segment, transcribe and correct it
+2. Check for clear token at end of segment:
+   - If found: call `_confirm_silence()` to wait for silence confirmation
+   - If silence confirmed: reset accumulated transcript, strip clear token, call `on_clear` callback (for chime playback), continue loop
+   - If user keeps talking (silence not confirmed): treat the clear token as normal speech, append segment to accumulated
+3. Check for stop word at end of segment:
+   - If found: call `_confirm_silence()` to wait for silence confirmation
+   - If silence confirmed: strip stop word, add to accumulated, break out of loop and return
+   - If user keeps talking (silence not confirmed): treat the stop word as normal speech, append segment to accumulated
+4. Otherwise: append segment to accumulated, continue loop
+5. On timeout or no-speech: return whatever has accumulated
 
 Segments are joined with spaces: `" ".join(accumulated_transcripts)`.
+
+Clear token checking happens before stop word checking, so if both appear in the same segment, the clear token takes priority.
 
 ### Mode Switching
 
 `SpeechModeManager.set_mode(mode, stop_word)` -- validates mode is "pause" or "stop_token". The manager is passed to `STTPipeline.listen()` which checks `speech_mode.is_stop_token()` to choose the code path.
+
+### Configuration
+
+```python
+SpeechModeConfig:
+    mode: str = "pause"          # "pause" or "stop_token"
+    stop_word: str = "over"      # Keyword to end dictation in stop_token mode
+    clear_token: str = "clear"   # Keyword to reset transcript in stop_token mode
+    stop_confirm_ms: int = 1500  # Silence required after stop word / clear token (ms)
+    max_timeout_s: int = 120     # Maximum listen duration before auto-return
+```

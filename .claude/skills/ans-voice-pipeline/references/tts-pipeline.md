@@ -162,3 +162,20 @@ message -> preprocess() -> count chunks
 ```
 
 Error handling: if playback fails with `ClientException`, `source.finish()` is called to clean up the streaming source, and `synth_future` is awaited to prevent orphan threads.
+
+## Chime Playback (`server/chime.py`)
+
+Non-speech audio cues played during the voice pipeline. Generated as sine-wave tones and cached in memory after first generation.
+
+### Chime Types
+
+| Chime | Function | Sound | When |
+|---|---|---|---|
+| Recording-done | `generate_done_chime()` | Single tone | After `STTPipeline.listen()` returns in `CallManager._stt_listen()` |
+| Clear | `generate_clear_chime()` | Two-tone descending | Mid-loop in `_listen_stop_token()` via the `on_clear` callback |
+
+### Playback Path
+
+Both chimes use the same playback path as TTS audio: `TTSAudioSource.from_audio(chime_ndarray, sample_rate)` to create a Discord-compatible audio source, then `voice_client.play(source)`. This reuses the existing resampling and format conversion (float32 mono -> 48kHz stereo int16) without any special-case code.
+
+The recording-done chime plays after `_stt_listen()` completes, signaling to the user that their speech was captured. The clear chime plays mid-listen via the `on_clear` callback passed into `STTPipeline.listen()` -- `CallManager._stt_listen()` provides a lambda that generates the clear chime and plays it through the voice client.

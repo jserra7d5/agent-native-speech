@@ -81,7 +81,7 @@ Config is a `@dataclass` hierarchy. Top-level `Config` has nested sub-configs:
 | `ServerConfig` | host, port, transport (http/stdio) |
 | `TTSConfig` | backend (local/elevenlabs), default_voice, device, elevenlabs voice map |
 | `STTConfig` | backend (local/elevenlabs), model (whisper size), device |
-| `SpeechModeConfig` | mode (pause/stop_token), stop_word, max_timeout_s |
+| `SpeechModeConfig` | mode (pause/stop_token), stop_word, max_timeout_s, stop_confirm_ms, clear_token, chime_enabled, chime_frequency_hz, chime_duration_ms |
 | `SpawnConfig` | default_cli (claude/codex), terminal_override, server_url |
 | `LLMConfig` | backend, model, api_key, api_base_url, timeout_ms |
 | `RouterConfig` | enabled, model override, timeout_ms override |
