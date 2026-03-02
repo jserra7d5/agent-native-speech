@@ -278,13 +278,17 @@ class SpawnManager:
                 prompt as a positional argument instead.
         """
         if cli == "claude":
-            cmd = ["claude", "--mcp-config", self._mcp_config_path]
+            # --mcp-config is variadic (<configs...>) and consumes all
+            # subsequent non-flag arguments, so it MUST come last.
+            # Prompt and other flags go before it.
+            cmd = ["claude"]
             if resume_session_id:
                 cmd.extend(["--resume", resume_session_id])
             if headless:
                 cmd.extend(["--print", _CALLBACK_PROMPT])
             else:
                 cmd.append(_CALLBACK_PROMPT)
+            cmd.extend(["--mcp-config", self._mcp_config_path])
             return cmd
         elif cli == "codex":
             if resume_session_id:
