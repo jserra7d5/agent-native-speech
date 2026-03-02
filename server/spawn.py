@@ -115,6 +115,11 @@ class SpawnManager:
         self._detector = TerminalDetector(config.spawn.terminal_override)
         self._server_url = config.spawn.server_url
 
+    @property
+    def default_cli(self) -> str:
+        """Return the configured default CLI name."""
+        return self._config.spawn.default_cli
+
     def spawn_session(
         self,
         directory: str,
@@ -122,6 +127,7 @@ class SpawnManager:
         voice: str | None = None,
         headless: bool = False,
         user_id: str = "",
+        resume_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Spawn a coding agent CLI session.
 
@@ -131,6 +137,8 @@ class SpawnManager:
             voice: Optional TTS voice name for session registration.
             headless: If True, run without a terminal window.
             user_id: Discord user ID of the spawner.
+            resume_session_id: If set, resume this existing session instead
+                of starting a new one.
 
         Returns:
             dict with keys: process_pid, terminal_pid, directory, cli,
@@ -153,7 +161,7 @@ class SpawnManager:
             raise ValueError(f"CLI not found: {cli} is not installed")
 
         # Build the CLI command
-        cli_command = self._build_cli_command(cli, directory)
+        cli_command = self._build_cli_command(cli, directory, resume_session_id)
 
         process_pid: int | None = None
         terminal_pid: int | None = None
@@ -240,7 +248,12 @@ class SpawnManager:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_cli_command(self, cli: str, directory: str) -> list[str]:
+    def _build_cli_command(
+        self,
+        cli: str,
+        directory: str,
+        resume_session_id: str | None = None,
+    ) -> list[str]:
         """Build the shell command list for the coding agent CLI."""
         if cli == "claude":
             mcp_config = json.dumps({
@@ -250,12 +263,18 @@ class SpawnManager:
                     }
                 }
             })
-            return [
-                "claude",
-                "--mcp-config", mcp_config,
-                "--print", _CALLBACK_PROMPT,
-            ]
+            cmd = ["claude", "--mcp-config", mcp_config]
+            if resume_session_id:
+                cmd.extend(["--resume", resume_session_id])
+            cmd.extend(["--print", _CALLBACK_PROMPT])
+            return cmd
         elif cli == "codex":
+            if resume_session_id:
+                return [
+                    "codex", "resume", resume_session_id,
+                    "--mcp-config", f"voice-agent={self._server_url}",
+                    _CALLBACK_PROMPT,
+                ]
             return [
                 "codex",
                 "--mcp-config", f"voice-agent={self._server_url}",

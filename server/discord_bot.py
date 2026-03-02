@@ -591,23 +591,20 @@ class VoiceBot(commands.Bot):
                 )
                 return
 
-            # Detect CLI type via SessionBrowser if available
+            # Look up session metadata via SessionBrowser if available
             cli_type = None
             directory = None
             if self._session_browser is not None:
                 try:
-                    cli_type = self._session_browser.detect_cli(session_id)
+                    meta = self._session_browser.find_session(session_id)
+                    if meta is not None:
+                        cli_type = meta.cli
+                        directory = meta.directory
                 except Exception as exc:
-                    log.warning("Failed to detect CLI for session %s: %s", session_id, exc)
+                    log.warning("Failed to find session %s: %s", session_id, exc)
 
             if cli_type is None or cli_type == "unknown":
-                cli_type = self._config.spawn.default_cli
-
-            # Build resume command
-            if cli_type == "codex":
-                resume_prompt = f"codex resume {session_id}"
-            else:
-                resume_prompt = f'claude -r "{session_id}"'
+                cli_type = self._spawn_manager.default_cli
 
             await interaction.response.send_message(
                 f"Resuming {cli_type} session `{session_id}`...",
@@ -615,7 +612,7 @@ class VoiceBot(commands.Bot):
             )
 
             try:
-                # Use home directory as fallback working directory
+                # Use original project directory, fall back to home
                 work_dir = directory or os.path.expanduser("~")
                 result = self._spawn_manager.spawn_session(
                     directory=work_dir,
@@ -623,6 +620,7 @@ class VoiceBot(commands.Bot):
                     voice=voice,
                     headless=headless,
                     user_id=str(interaction.user.id),
+                    resume_session_id=session_id,
                 )
             except (ValueError, RuntimeError) as exc:
                 await interaction.followup.send(str(exc), ephemeral=True)

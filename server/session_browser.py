@@ -189,6 +189,70 @@ class SessionBrowser:
         all_sessions.sort(key=lambda s: s.timestamp, reverse=True)
         return all_sessions[:n]
 
+    def find_session(self, session_id: str) -> SessionMetadata | None:
+        """Look up a session by ID and return its full metadata.
+
+        Checks Claude projects first (faster -- index files), then
+        scans Codex rollout files.
+
+        Returns:
+            SessionMetadata if found, None otherwise.
+        """
+        # Check Claude projects
+        if _CLAUDE_PROJECTS_DIR.exists():
+            try:
+                for index_file in _CLAUDE_PROJECTS_DIR.glob(
+                    "*/sessions-index.json"
+                ):
+                    try:
+                        data = json.loads(
+                            index_file.read_text(encoding="utf-8")
+                        )
+                        entries = (
+                            data.get("entries", [])
+                            if isinstance(data, dict)
+                            else []
+                        )
+                        for entry in entries:
+                            if (
+                                isinstance(entry, dict)
+                                and entry.get("sessionId") == session_id
+                            ):
+                                ts_str = (
+                                    entry.get("modified")
+                                    or entry.get("created", "")
+                                )
+                                return SessionMetadata(
+                                    session_id=session_id,
+                                    cli="claude",
+                                    summary=entry.get(
+                                        "summary",
+                                        entry.get("firstPrompt", ""),
+                                    ),
+                                    directory=entry.get("projectPath", ""),
+                                    timestamp=_parse_iso_timestamp(ts_str),
+                                    message_count=entry.get("messageCount", 0),
+                                    git_branch=entry.get("gitBranch") or "",
+                                )
+                    except (json.JSONDecodeError, OSError):
+                        continue
+            except OSError:
+                pass
+
+        # Check Codex sessions
+        if _CODEX_SESSIONS_DIR.exists():
+            try:
+                for rollout_path in _CODEX_SESSIONS_DIR.glob(
+                    "*/*/*/rollout-*.jsonl"
+                ):
+                    meta = self._parse_codex_rollout(rollout_path)
+                    if meta and meta.session_id == session_id:
+                        return meta
+            except OSError:
+                pass
+
+        return None
+
     def detect_cli(self, session_id: str) -> str:
         """Determine if a session ID belongs to Claude or Codex.
 

@@ -44,7 +44,8 @@ main() -> _parse_args() -> run(transport, config_path)
   |     6. Optional: warmup STT + TTS      # If preload_models=true
   |     7. SessionManager(...)             # Wraps CallManager + VoicePool
   |     8. SpawnManager(config)            # Wire into bot for /spawn command
-  |     9. Server("agent-native-speech")   # MCP server + _register_handlers()
+  |     9. SessionBrowser()               # Wire into bot for /sessions + /resume
+  |    10. Server("agent-native-speech")   # MCP server + _register_handlers()
   |
   +-> Signal handlers (SIGINT, SIGTERM) -> shutdown_event.set()
   |
@@ -117,6 +118,7 @@ bot_runner.bot.set_correction_manager(stt_pipeline.correction_manager)
 bot_runner.bot.set_speech_mode_manager(speech_mode_manager)
 bot_runner.bot.set_spawn_manager(spawn_manager)
 bot_runner.bot.set_session_manager(session_manager)
+bot_runner.bot.set_session_browser(session_browser)
 ```
 
 Slash commands: `/correct`, `/corrections`, `/mode`, `/stopword`, `/spawn`, `/sessions`, `/kill`, `/resume`
@@ -137,6 +139,12 @@ See `references/discord-bot.md` for full slash command details and BotRunner API
 The spawned agent's MCP config is passed inline:
 - Claude: `claude --mcp-config '{"mcpServers":{"voice-agent":{"url":"..."}}}'`
 - Codex: `codex --mcp-config voice-agent=URL`
+
+**Resume support**: `spawn_session(resume_session_id=...)` passes through to `_build_cli_command()`:
+- Claude: `claude --mcp-config ... --resume <session_id> --print <prompt>`
+- Codex: `codex resume <session_id> --mcp-config ... <prompt>`
+
+The `/resume` slash command uses `SessionBrowser.find_session()` to resolve the CLI type and original working directory before spawning.
 
 ## Init Wizard
 

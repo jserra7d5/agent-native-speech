@@ -193,9 +193,10 @@ Terminates an active session by name or ID:
 ```
 
 Resumes a previous CLI session:
-1. Detects CLI type via SessionBrowser (falls back to config default)
-2. Builds resume command: `claude -r "session_id"` or `codex resume session_id`
-3. Spawns via SpawnManager and registers the new session
+1. Looks up session via `SessionBrowser.find_session()` to get CLI type and working directory
+2. Falls back to `SpawnManager.default_cli` if session not found
+3. Spawns via `SpawnManager.spawn_session(resume_session_id=...)` which passes `--resume` (Claude) or `resume` subcommand (Codex)
+4. Registers the new session with the resolved directory and voice
 
 ## DAVE E2EE Patches
 

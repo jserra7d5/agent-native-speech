@@ -89,8 +89,19 @@ Four intents:
 
 Fuzzy matching via `thefuzz.process.extractOne` with `token_sort_ratio` scorer, threshold 75. Falls back to `reply_current` on any error, timeout, or unmatched session name.
 
-### Session Browser Filesystem Paths
+### Session Browser
 
+`SessionBrowser` reads previous CLI session history from the filesystem. Key methods:
+
+- `list_claude_sessions(directory)` -- list sessions for a specific project
+- `list_codex_sessions(directory=None)` -- list Codex sessions, optionally filtered
+- `list_recent(n=10, cli_filter=None)` -- merge and sort all sessions by recency
+- `find_session(session_id)` -- look up a session by ID, returns `SessionMetadata` with cli type, directory, summary, timestamp (or `None` if not found)
+- `detect_cli(session_id)` -- returns `"claude"`, `"codex"`, or `"unknown"`
+
+`find_session()` is used by `/resume` to resolve both the CLI type and original working directory.
+
+Filesystem paths:
 - Claude Code: `~/.claude/projects/<encoded-path>/sessions-index.json`
   - Path encoding: `/home/joe/myproject` becomes `-home-joe-myproject`
 - Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`

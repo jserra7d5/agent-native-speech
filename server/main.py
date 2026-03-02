@@ -479,6 +479,12 @@ def _init_components(config: Config) -> tuple[
     bot_runner.bot.set_session_manager(session_manager)
     log.info("SpawnManager wired into Discord bot")
 
+    # Create session browser and wire into bot for /sessions and /resume
+    from server.session_browser import SessionBrowser  # noqa: PLC0415
+    session_browser = SessionBrowser()
+    bot_runner.bot.set_session_browser(session_browser)
+    log.info("SessionBrowser wired into Discord bot")
+
     # Build the MCP server and register tool handlers
     mcp_server = Server("agent-native-speech")
     _register_handlers(mcp_server, session_manager, config, speech_mode_manager)
