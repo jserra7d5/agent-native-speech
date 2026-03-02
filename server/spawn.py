@@ -2,6 +2,10 @@
 
 Detects available terminal emulators and launches Claude Code or Codex CLI
 sessions that connect back to the voice agent server via MCP HTTP transport.
+
+Claude Code's ``--mcp-config`` flag prevents TUI rendering in terminal
+emulators, so we write the voice-agent MCP entry to the global
+``~/.claude/.mcp.json`` instead.  Global MCP servers are always trusted.
 """
 
 from __future__ import annotations
@@ -11,7 +15,6 @@ import logging
 import os
 import shutil
 import subprocess
-import tempfile
 from typing import Any
 
 from server.config import Config
@@ -114,9 +117,6 @@ class SpawnManager:
         self._config = config
         self._detector = TerminalDetector(config.spawn.terminal_override)
         self._server_url = config.spawn.server_url
-        # Write MCP config to a temp file so --mcp-config (which is variadic)
-        # doesn't consume subsequent positional arguments like the prompt.
-        self._mcp_config_path = self._write_mcp_config_file()
 
     @property
     def default_cli(self) -> str:
@@ -163,6 +163,11 @@ class SpawnManager:
         if not shutil.which(cli):
             raise ValueError(f"CLI not found: {cli} is not installed")
 
+        # Ensure the global ~/.claude/.mcp.json has the voice-agent HTTP
+        # entry so the spawned Claude can connect back to us.
+        if cli == "claude":
+            self._ensure_global_mcp_config()
+
         # Build the CLI command
         cli_command = self._build_cli_command(cli, directory, resume_session_id, headless)
 
@@ -200,7 +205,7 @@ class SpawnManager:
                 )
 
             terminal_command = self._build_terminal_command(
-                terminal, cli_command
+                terminal, cli_command, directory
             )
             proc = subprocess.Popen(
                 terminal_command,
@@ -278,17 +283,16 @@ class SpawnManager:
                 prompt as a positional argument instead.
         """
         if cli == "claude":
-            # --mcp-config is variadic (<configs...>) and consumes all
-            # subsequent non-flag arguments, so it MUST come last.
-            # Prompt and other flags go before it.
-            cmd = ["claude"]
+            # MCP config is provided via user-scoped MCP settings (added
+            # with `claude mcp add --scope user`).  The --mcp-config CLI
+            # flag is avoided because it prevents TUI rendering.
+            cmd = ["claude", "--dangerously-skip-permissions"]
             if resume_session_id:
                 cmd.extend(["--resume", resume_session_id])
             if headless:
                 cmd.extend(["--print", _CALLBACK_PROMPT])
             else:
                 cmd.append(_CALLBACK_PROMPT)
-            cmd.extend(["--mcp-config", self._mcp_config_path])
             return cmd
         elif cli == "codex":
             if resume_session_id:
@@ -305,31 +309,63 @@ class SpawnManager:
         else:
             raise ValueError(f"Unsupported CLI: {cli!r}")
 
-    def _write_mcp_config_file(self) -> str:
-        """Write MCP server config to a temp file and return its path.
+    _GLOBAL_MCP_PATH = os.path.join(os.path.expanduser("~"), ".claude", ".mcp.json")
 
-        Claude Code's ``--mcp-config`` flag is variadic, so passing inline
-        JSON would cause it to consume subsequent positional arguments (like
-        the prompt).  Writing to a file avoids this.
+    def _ensure_global_mcp_config(self) -> None:
+        """Ensure ``~/.claude/.mcp.json`` has a voice-agent HTTP entry.
+
+        Global MCP servers are always trusted by Claude Code — no per-project
+        setup or ``enableAllProjectMcpServers`` needed.  Merges with existing
+        entries (e.g. ``voice-agent-stdio``) and only touches the
+        ``voice-agent`` key.
         """
-        config_data = {
-            "mcpServers": {
-                "voice-agent": {
-                    "url": self._server_url,
-                }
-            }
-        }
-        fd, path = tempfile.mkstemp(prefix="voice-agent-mcp-", suffix=".json")
-        with os.fdopen(fd, "w") as f:
-            json.dump(config_data, f)
-        log.info("Wrote MCP config to %s", path)
-        return path
+        mcp_path = self._GLOBAL_MCP_PATH
+        config_data: dict[str, Any] = {}
+
+        if os.path.exists(mcp_path):
+            try:
+                with open(mcp_path) as f:
+                    config_data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                log.warning("Could not parse %s, will merge cautiously", mcp_path)
+                config_data = {}
+
+        servers = config_data.setdefault("mcpServers", {})
+
+        # Skip write if already correct
+        existing = servers.get("voice-agent")
+        if isinstance(existing, dict) and existing.get("url") == self._server_url:
+            log.debug("voice-agent HTTP entry already in %s", mcp_path)
+            return
+
+        servers["voice-agent"] = {"type": "http", "url": self._server_url}
+
+        with open(mcp_path, "w") as f:
+            json.dump(config_data, f, indent=2)
+            f.write("\n")
+        log.info("Wrote voice-agent HTTP entry to %s", mcp_path)
 
     def _build_terminal_command(
         self,
         terminal: str,
         cli_command: list[str],
+        directory: str | None = None,
     ) -> list[str]:
-        """Wrap a CLI command for execution inside a terminal emulator."""
+        """Wrap a CLI command for execution inside a terminal emulator.
+
+        Client-server terminals (wezterm, gnome-terminal) open tabs in the
+        existing GUI process and ignore the parent's ``cwd``, so we pass
+        the working directory explicitly when supported.
+        """
+        base = os.path.basename(terminal)
+
+        # wezterm: insert --cwd before the -- separator
+        if base == "wezterm" and directory:
+            return [terminal, "start", "--cwd", directory, "--"] + cli_command
+
+        # gnome-terminal: --working-directory flag
+        if base == "gnome-terminal" and directory:
+            return [terminal, f"--working-directory={directory}", "--"] + cli_command
+
         exec_flags = TerminalDetector.get_exec_flags(terminal)
         return [terminal] + exec_flags + cli_command
