@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -71,6 +72,7 @@ class STTPipeline:
         custom_vocab: list[str] | None = None,
         timeout_s: float = 60.0,
         speech_mode: SpeechModeManager | None = None,
+        on_clear: Callable[[], None] | None = None,
     ) -> str:
         """Listen for a single utterance and return the corrected transcript.
 
@@ -91,6 +93,9 @@ class STTPipeline:
             timeout_s: Maximum seconds to wait for speech before giving up.
             speech_mode: Optional SpeechModeManager; when set and in stop_token
                 mode, segments are accumulated until the stop word is spoken.
+            on_clear: Optional callback invoked when the clear token is
+                confirmed in stop_token mode.  The call_manager typically
+                passes a function that plays the "clear" chime.
 
         Returns:
             The corrected transcript string, or an empty string if no speech
@@ -101,6 +106,7 @@ class STTPipeline:
         if use_stop_token:
             return await self._listen_stop_token(
                 voice_client, user, user_id, custom_vocab, speech_mode,
+                on_clear=on_clear,
             )
         return await self._listen_single(
             voice_client, user, user_id, custom_vocab, timeout_s,
@@ -156,13 +162,22 @@ class STTPipeline:
         user_id: str,
         custom_vocab: list[str] | None,
         speech_mode: SpeechModeManager,
+        on_clear: Callable[[], None] | None = None,
     ) -> str:
-        """Accumulate segments until the stop word is spoken or max timeout."""
+        """Accumulate segments until the stop word is spoken or max timeout.
+
+        After the stop word (or clear token) is detected the pipeline waits
+        for ``stop_confirm_ms`` of silence before confirming the action.  If
+        the user starts speaking again during that window the token is treated
+        as normal speech and accumulation continues.
+        """
         max_timeout = speech_mode.max_timeout_s
+        # Silence-confirmation timeout (seconds) after stop/clear token
+        confirm_timeout_s = speech_mode._config.stop_confirm_ms / 1000.0
         log.info(
             "STT listen() called for user=%s (id=%s) [stop_token mode, "
-            "stop_word=%r, max_timeout=%.0fs]",
-            user, user_id, speech_mode.stop_word, max_timeout,
+            "stop_word=%r, max_timeout=%.0fs, confirm_timeout=%.1fs]",
+            user, user_id, speech_mode.stop_word, max_timeout, confirm_timeout_s,
         )
 
         accumulated_transcripts: list[str] = []
@@ -208,13 +223,59 @@ class STTPipeline:
             if not transcript.strip():
                 continue
 
+            # ----------------------------------------------------------
+            # Check for clear token BEFORE the stop word
+            # ----------------------------------------------------------
+            clear_found, clear_cleaned = speech_mode.check_clear_token(transcript)
+            if clear_found:
+                log.info("Clear token detected, waiting for silence confirmation")
+                confirmed = await self._confirm_silence(
+                    voice_client, user, confirm_timeout_s, overall_start, max_timeout,
+                )
+                if confirmed:
+                    log.info("Clear token confirmed, resetting transcript")
+                    accumulated_transcripts = []
+                    if on_clear is not None:
+                        on_clear()
+                    continue
+                else:
+                    # User kept talking — treat the segment (with clear
+                    # token still in it) as normal speech.
+                    log.info("Clear token cancelled, user continued speaking")
+                    accumulated_transcripts.append(transcript)
+                    log.info(
+                        "Segment transcribed (clear cancelled): %r "
+                        "(accumulated %d segments)",
+                        transcript, len(accumulated_transcripts),
+                    )
+                    continue
+
+            # ----------------------------------------------------------
             # Check for stop word
+            # ----------------------------------------------------------
             found, cleaned = speech_mode.check_stop_word(transcript)
             if found:
                 if cleaned.strip():
                     accumulated_transcripts.append(cleaned)
-                log.info("Stop word detected in segment, returning accumulated transcript")
-                break
+                log.info("Stop word detected, waiting for silence confirmation")
+                confirmed = await self._confirm_silence(
+                    voice_client, user, confirm_timeout_s, overall_start, max_timeout,
+                )
+                if confirmed:
+                    elapsed_ms = (time.monotonic() - overall_start) * 1000
+                    log.info(
+                        "Stop word confirmed after %.0fms silence", elapsed_ms,
+                    )
+                    break
+                else:
+                    # User kept talking — cancel the pending stop.
+                    # Re-add the segment with the stop word still in it
+                    # (remove the cleaned version we may have appended).
+                    if cleaned.strip() and accumulated_transcripts and accumulated_transcripts[-1] == cleaned:
+                        accumulated_transcripts.pop()
+                    accumulated_transcripts.append(transcript)
+                    log.info("Stop word cancelled, user continued speaking")
+                    continue
             else:
                 accumulated_transcripts.append(transcript)
                 log.info(
@@ -228,6 +289,61 @@ class STTPipeline:
         full_transcript = " ".join(accumulated_transcripts)
         log.info("Stop-token accumulated transcript: %r", full_transcript)
         return full_transcript
+
+    async def _confirm_silence(
+        self,
+        voice_client: discord.VoiceClient,
+        user: discord.Member | discord.User,
+        confirm_timeout_s: float,
+        overall_start: float,
+        max_timeout: float,
+    ) -> bool:
+        """Wait for silence to confirm a stop word or clear token.
+
+        Returns ``True`` if no speech is detected within *confirm_timeout_s*
+        (i.e. the token is confirmed).  Returns ``False`` if the user starts
+        speaking again (i.e. the token should be cancelled).
+
+        The method also respects the overall *max_timeout* so we never listen
+        past the session limit.
+        """
+        elapsed = time.monotonic() - overall_start
+        remaining = max_timeout - elapsed
+        # Use the shorter of confirm timeout and remaining session time
+        timeout = min(confirm_timeout_s, remaining)
+        if timeout <= 0:
+            # No time left — treat as confirmed
+            return True
+
+        sink = UserAudioSink(target_user=user)
+        self._vad.reset()
+
+        try:
+            voice_client.listen(sink)
+        except Exception:
+            log.exception("Failed to attach audio sink for silence confirmation")
+            return True  # Can't listen, assume confirmed
+
+        confirm_start = time.monotonic()
+        speech_audio: np.ndarray | None = None
+
+        try:
+            speech_audio = await self._wait_for_speech(sink, timeout, confirm_start)
+        finally:
+            try:
+                voice_client.stop_listening()
+            except Exception:
+                pass
+            sink.cleanup()
+
+        self._save_debug_audio()
+
+        # If no speech was detected within the timeout, silence is confirmed
+        if speech_audio is None or len(speech_audio) == 0:
+            return True
+
+        # Speech was detected — the token is NOT confirmed
+        return False
 
     async def _transcribe_and_correct(
         self,

@@ -16,6 +16,8 @@ from typing import Any
 import discord
 
 from server.audio_source import StreamingAudioSource, TTSAudioSource
+from server.chime import generate_chime, generate_clear_chime
+from server.config import Config, SpeechModeConfig
 from server.tts_backend import TTSBackend, preprocess as _preprocess
 from server.discord_bot import BotRunner
 from server.speech_mode import SpeechModeManager
@@ -63,6 +65,7 @@ class CallManager:
         stt_pipeline: STTPipeline,
         tts_engine: TTSBackend,
         speech_mode_manager: SpeechModeManager | None = None,
+        config: Config | None = None,
     ) -> None:
         """Initialise the manager.
 
@@ -71,11 +74,15 @@ class CallManager:
             stt_pipeline: Shared STT pipeline (VAD + Whisper + LLM correction).
             tts_engine: Shared TTS engine (Qwen3-TTS).
             speech_mode_manager: Optional speech mode manager for stop-token support.
+            config: Application config (used for chime settings, etc.).
         """
         self._runner = bot_runner
         self._stt = stt_pipeline
         self._tts_engine = tts_engine
         self._speech_mode = speech_mode_manager
+        self._speech_mode_config: SpeechModeConfig = (
+            config.speech_mode if config else SpeechModeConfig()
+        )
         # Keyed by call_id (str UUID)
         self._sessions: dict[str, CallSession] = {}
 
@@ -198,6 +205,31 @@ class CallManager:
             source.finish()
             await synth_future
 
+    async def _play_chime(
+        self,
+        voice_client: discord.VoiceClient,
+        chime_audio: "np.ndarray",
+    ) -> None:
+        """Play a short chime through the voice client.
+
+        Args:
+            voice_client: Connected Discord voice client.
+            chime_audio: Float32 mono numpy array at 48000 Hz.
+        """
+        if not voice_client.is_connected():
+            log.debug("Voice client disconnected; skipping chime")
+            return
+        try:
+            source = TTSAudioSource.from_audio(chime_audio, sample_rate=48000)
+            voice_client.play(source)
+            while not source.done.is_set():
+                await asyncio.sleep(0.05)
+            log.debug("Chime playback complete (%.2f s)", source.duration_seconds)
+        except discord.ClientException as exc:
+            log.warning("Failed to play chime (ClientException): %s", exc)
+        except Exception as exc:
+            log.warning("Unexpected error during chime playback: %s", exc)
+
     async def _stt_listen(
         self,
         voice_client: discord.VoiceClient,
@@ -210,6 +242,11 @@ class CallManager:
           2. Streaming audio through Silero VAD for speech boundary detection
           3. Transcribing with Faster-Whisper
           4. Applying LLM-based corrections via the user's correction dictionary
+
+        After the transcript is returned, plays a short chime to signal to
+        the user that recording has finished (if chime is enabled in config).
+        In stop_token mode, also passes an ``on_clear`` callback that plays
+        a distinct two-tone chime when the clear token is spoken.
         """
         if not voice_client.is_connected():
             log.warning("Voice client disconnected; cannot %s", "listen")
@@ -224,13 +261,46 @@ class CallManager:
             )
             return ""
 
+        # Build the on_clear callback for stop_token mode
+        smc = self._speech_mode_config
+
+        def on_clear() -> None:
+            """Play a descending two-tone chime when the clear token fires."""
+            if not smc.chime_enabled:
+                return
+            if not voice_client.is_connected():
+                return
+            try:
+                clear_audio = generate_clear_chime(
+                    smc.chime_frequency_hz,
+                    smc.chime_duration_ms,
+                )
+                source = TTSAudioSource.from_audio(clear_audio, sample_rate=48000)
+                voice_client.play(source)
+                # Block until playback finishes (called from sync context)
+                source.done.wait(timeout=2.0)
+                log.debug("Clear chime playback complete")
+            except Exception as exc:
+                log.warning("Failed to play clear chime: %s", exc)
+
         user_id = str(user.id)
-        return await self._stt.listen(
+        transcript = await self._stt.listen(
             voice_client=voice_client,
             user=user,
             user_id=user_id,
             speech_mode=self._speech_mode,
+            on_clear=on_clear,
         )
+
+        # Play "recording done" chime after STT completes
+        if smc.chime_enabled and transcript:
+            chime_audio = generate_chime(
+                smc.chime_frequency_hz,
+                smc.chime_duration_ms,
+            )
+            await self._play_chime(voice_client, chime_audio)
+
+        return transcript
 
     def _resolve_voice_user(
         self,

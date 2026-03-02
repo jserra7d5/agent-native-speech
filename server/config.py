@@ -59,6 +59,11 @@ class SpeechModeConfig:
     mode: str = "pause"  # "pause" or "stop_token"
     stop_word: str = "over"
     max_timeout_s: float = 60.0
+    stop_confirm_ms: int = 1500
+    clear_token: str = "clear"
+    chime_enabled: bool = True
+    chime_frequency_hz: int = 880
+    chime_duration_ms: int = 150
 
 
 @dataclass
@@ -171,6 +176,11 @@ class Config:
             mode=sm_data.get("mode", "pause"),
             stop_word=sm_data.get("stop_word", "over"),
             max_timeout_s=sm_data.get("max_timeout_s", 60.0),
+            stop_confirm_ms=sm_data.get("stop_confirm_ms", 1500),
+            clear_token=sm_data.get("clear_token", "clear"),
+            chime_enabled=sm_data.get("chime_enabled", True),
+            chime_frequency_hz=sm_data.get("chime_frequency_hz", 880),
+            chime_duration_ms=sm_data.get("chime_duration_ms", 150),
         )
 
         spawn_data = data.get("spawn", {})
@@ -349,6 +359,11 @@ class Config:
                 mode=os.getenv("SPEECH_MODE", "pause"),
                 stop_word=os.getenv("STOP_WORD", "over"),
                 max_timeout_s=float(os.getenv("SPEECH_MAX_TIMEOUT_S", "60.0")),
+                stop_confirm_ms=int(os.getenv("STOP_CONFIRM_MS", "1500")),
+                clear_token=os.getenv("CLEAR_TOKEN", "clear"),
+                chime_enabled=os.getenv("CHIME_ENABLED", "true").lower() in ("true", "1", "yes"),
+                chime_frequency_hz=int(os.getenv("CHIME_FREQUENCY_HZ", "880")),
+                chime_duration_ms=int(os.getenv("CHIME_DURATION_MS", "150")),
             ),
             spawn=SpawnConfig(
                 default_cli=os.getenv("DEFAULT_CLI", "claude"),

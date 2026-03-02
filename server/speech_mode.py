@@ -36,6 +36,7 @@ class SpeechModeManager:
     """
 
     def __init__(self, config: SpeechModeConfig) -> None:
+        self._config = config
         self._mode = SpeechMode(
             mode=config.mode,
             stop_word=config.stop_word,
@@ -107,6 +108,36 @@ class SpeechModeManager:
         if cleaned.lower().endswith(stop):
             # Remove the stop word from the end
             prefix = cleaned[: -len(stop)].rstrip()
+            return True, prefix
+
+        return False, transcript
+
+    def check_clear_token(self, transcript: str) -> tuple[bool, str]:
+        """Check if transcript ends with the clear token.
+
+        The check is case-insensitive and ignores trailing punctuation.
+
+        Args:
+            transcript: The transcribed text segment to check.
+
+        Returns:
+            Tuple of (found, cleaned_transcript):
+              - found: True if the clear token was detected at the end
+              - cleaned_transcript: transcript with the trailing clear token removed
+                (if found), or the original transcript (if not found)
+        """
+        stripped = transcript.strip()
+        if not stripped:
+            return False, transcript
+
+        # Remove trailing punctuation for comparison
+        cleaned = _TRAILING_PUNCT.sub("", stripped).rstrip()
+        token = self._config.clear_token.lower()
+
+        # Check if the cleaned text ends with the clear token
+        if cleaned.lower().endswith(token):
+            # Remove the clear token from the end
+            prefix = cleaned[: -len(token)].rstrip()
             return True, prefix
 
         return False, transcript

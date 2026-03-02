@@ -83,7 +83,8 @@ class SessionManager:
         config: Config | None = None,
     ) -> None:
         self._call_manager = CallManager(
-            bot_runner, stt_pipeline, tts_engine, speech_mode_manager
+            bot_runner, stt_pipeline, tts_engine, speech_mode_manager,
+            config=config,
         )
         self._runner = bot_runner
         self._sessions: dict[str, AgentSession] = {}
