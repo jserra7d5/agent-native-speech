@@ -553,6 +553,7 @@ async def _run_http(
         host=host,
         port=port,
         log_level="info",
+        log_config=None,  # preserve our logging setup; prevent stdout writes
     )
     server = uvicorn.Server(uv_config)
 
@@ -588,6 +589,56 @@ async def _run_http(
             raise exc
 
 
+async def _run_stdio_with_http(
+    mcp_server: Server,
+    config: Config,
+    shutdown_event: asyncio.Event,
+) -> None:
+    """Run stdio transport with an HTTP sidecar for spawned agent connections.
+
+    The HTTP server starts as a background task so that agents launched via
+    ``/spawn`` can connect back over ``http://host:port/mcp`` while the parent
+    Claude Code session communicates over stdio.  If the HTTP port is already
+    in use the sidecar fails gracefully and stdio continues alone.
+    """
+    http_task: asyncio.Task[None] | None = None
+
+    def _http_task_done(task: asyncio.Task[None]) -> None:
+        """Log HTTP sidecar failures without crashing the stdio server."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            log.warning("HTTP sidecar exited with error: %s", exc)
+
+    try:
+        http_task = asyncio.create_task(
+            _run_http(mcp_server, config, shutdown_event),
+            name="http-sidecar",
+        )
+        http_task.add_done_callback(_http_task_done)
+        log.info(
+            "HTTP sidecar started on %s:%d for spawned agents",
+            config.server.host, config.server.port,
+        )
+    except Exception:
+        log.warning(
+            "Failed to start HTTP sidecar — spawned agents won't connect",
+            exc_info=True,
+        )
+
+    try:
+        await _run_stdio(mcp_server, shutdown_event)
+    finally:
+        # Stdio ended (parent disconnected) — tear down the HTTP sidecar
+        if http_task is not None and not http_task.done():
+            shutdown_event.set()
+            try:
+                await http_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
 async def run(transport: str | None = None, config_path: str | None = None) -> None:
     """Initialise all components and run the MCP server until shutdown."""
     config = _load_and_validate_config(config_path)
@@ -616,7 +667,7 @@ async def run(transport: str | None = None, config_path: str | None = None) -> N
 
     try:
         if transport == "stdio":
-            await _run_stdio(mcp_server, shutdown_event)
+            await _run_stdio_with_http(mcp_server, config, shutdown_event)
         else:
             await _run_http(mcp_server, config, shutdown_event)
     finally:

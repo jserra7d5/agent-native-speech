@@ -51,7 +51,9 @@ main() -> _parse_args() -> run(transport, config_path)
   |
   +-> Transport:
   |     HTTP: _run_http() -> uvicorn.Server(create_app(mcp_server))
-  |     stdio: _run_stdio() -> mcp.server.stdio.stdio_server()
+  |     stdio: _run_stdio_with_http() -> _run_http() as background task
+  |            + _run_stdio() -> mcp.server.stdio.stdio_server()
+  |            HTTP sidecar torn down when stdio ends (parent disconnects)
   |
   +-> Shutdown (finally block):
         tts_engine.unload() -> stt_pipeline.unload() -> bot_runner.shutdown()
@@ -69,6 +71,7 @@ main() -> _parse_args() -> run(transport, config_path)
 - Reads/writes JSON-RPC over stdin/stdout
 - **Never write to stdout** -- all logging goes to stderr + `/tmp/voice-agent.log`
 - Used when MCP client connects directly via process pipes
+- **HTTP sidecar**: Stdio mode automatically starts an HTTP server as a background task so that agents spawned via `/spawn` can connect back over `http://{host}:{port}/mcp`. Uses existing `server.host` and `server.port` config -- no additional config needed. If the HTTP port is already in use, the sidecar fails gracefully and stdio continues alone.
 
 Transport resolution: CLI `--transport` flag > `config.server.transport` > default "http"
 

@@ -4,7 +4,7 @@ MCP server that lets AI agents call users on Discord voice channels. Supports mu
 
 ## Architecture
 
-- **MCP server** (`server/main.py`) -- dual-transport (HTTP default, stdio fallback)
+- **MCP server** (`server/main.py`) -- dual-transport (HTTP default, stdio with HTTP sidecar)
 - **HTTP app** (`server/http_app.py`) -- Starlette ASGI with `StreamableHTTPSessionManager`
 - **Discord bot** (`server/discord_bot.py`) -- background thread via `BotRunner`
 - **SessionManager** (`server/session_manager.py`) -- multi-session registry wrapping CallManager
@@ -28,7 +28,7 @@ pip install -e '.[tts]'
 cp config.json.example config.json  # fill in discord_token, etc.
 python -m server.main                          # HTTP transport (default)
 python -m server.main --config config.json     # explicit config path
-python -m server.main --transport stdio        # stdio (legacy single-client)
+python -m server.main --transport stdio        # stdio + HTTP sidecar for spawned agents
 python -m server.init                          # first-time setup wizard
 ```
 
