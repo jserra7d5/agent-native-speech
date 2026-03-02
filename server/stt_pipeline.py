@@ -25,8 +25,6 @@ from server.transcriber import Transcriber
 from server.vad import SpeechDetector, SpeechEvent
 
 if TYPE_CHECKING:
-    import discord
-
     from server.speech_mode import SpeechModeManager
 
 log = logging.getLogger(__name__)
@@ -66,8 +64,7 @@ class STTPipeline:
 
     async def listen(
         self,
-        voice_client: discord.VoiceClient,
-        user: discord.Member | discord.User,
+        sink: UserAudioSink,
         user_id: str,
         custom_vocab: list[str] | None = None,
         timeout_s: float = 60.0,
@@ -79,15 +76,18 @@ class STTPipeline:
         Blocks until the user speaks and then stops speaking (silence detected),
         or until ``timeout_s`` elapses with no speech.
 
+        The caller is responsible for attaching the *sink* to the voice client
+        and draining stale audio before calling this method (persistent sink
+        pattern).  The sink must already be receiving audio from Discord.
+
         In **stop_token** mode (when ``speech_mode`` is set and active), the
         pipeline accumulates multiple VAD segments until the user says the
         configured stop word at the end of a segment, or until
         ``max_timeout_s`` elapses.
 
         Args:
-            voice_client: The connected discord.py VoiceClient (must be a
-                VoiceRecvClient from discord-ext-voice-recv).
-            user: The Discord user to listen to (filters out other speakers).
+            sink: A pre-attached UserAudioSink that is already receiving
+                audio from the voice channel (persistent sink pattern).
             user_id: String identifier for loading the user's corrections.
             custom_vocab: Optional list of domain terms to bias Whisper toward.
             timeout_s: Maximum seconds to wait for speech before giving up.
@@ -105,33 +105,23 @@ class STTPipeline:
         use_stop_token = speech_mode is not None and speech_mode.is_stop_token()
         if use_stop_token:
             return await self._listen_stop_token(
-                voice_client, user, user_id, custom_vocab, speech_mode,
+                sink, user_id, custom_vocab, speech_mode,
                 on_clear=on_clear,
             )
         return await self._listen_single(
-            voice_client, user, user_id, custom_vocab, timeout_s,
+            sink, user_id, custom_vocab, timeout_s,
         )
 
     async def _listen_single(
         self,
-        voice_client: discord.VoiceClient,
-        user: discord.Member | discord.User,
+        sink: UserAudioSink,
         user_id: str,
         custom_vocab: list[str] | None = None,
         timeout_s: float = 60.0,
     ) -> str:
-        """Original single-segment listen (pause mode)."""
-        log.info("STT listen() called for user=%s (id=%s) [pause mode]", user, user_id)
-        sink = UserAudioSink(target_user=user)
+        """Single-segment listen (pause mode) using a persistent audio sink."""
+        log.info("STT listen() called (id=%s) [pause mode, persistent sink]", user_id)
         self._vad.reset()
-
-        log.info("Attaching audio sink to voice client (type=%s)", type(voice_client).__name__)
-        try:
-            voice_client.listen(sink)
-            log.info("Audio sink attached successfully")
-        except Exception:
-            log.exception("Failed to attach audio sink — voice_recv may not be available")
-            return ""
 
         speech_audio: np.ndarray | None = None
         start_time = time.monotonic()
@@ -139,13 +129,8 @@ class STTPipeline:
         try:
             speech_audio = await self._wait_for_speech(sink, timeout_s, start_time)
         finally:
-            log.info("Detaching audio sink (elapsed=%.1fs, got_audio=%s)",
+            log.info("Listen complete (elapsed=%.1fs, got_audio=%s)",
                      time.monotonic() - start_time, speech_audio is not None)
-            try:
-                voice_client.stop_listening()
-            except Exception:
-                pass
-            sink.cleanup()
 
         self._save_debug_audio()
 
@@ -157,14 +142,16 @@ class STTPipeline:
 
     async def _listen_stop_token(
         self,
-        voice_client: discord.VoiceClient,
-        user: discord.Member | discord.User,
+        sink: UserAudioSink,
         user_id: str,
         custom_vocab: list[str] | None,
         speech_mode: SpeechModeManager,
         on_clear: Callable[[], None] | None = None,
     ) -> str:
         """Accumulate segments until the stop word is spoken or max timeout.
+
+        Uses a persistent audio sink — the sink is already attached to the
+        voice client and continuously receiving audio.
 
         After the stop word (or clear token) is detected the pipeline waits
         for ``stop_confirm_ms`` of silence before confirming the action.  If
@@ -175,9 +162,9 @@ class STTPipeline:
         # Silence-confirmation timeout (seconds) after stop/clear token
         confirm_timeout_s = speech_mode._config.stop_confirm_ms / 1000.0
         log.info(
-            "STT listen() called for user=%s (id=%s) [stop_token mode, "
+            "STT listen() called (id=%s) [stop_token mode, persistent sink, "
             "stop_word=%r, max_timeout=%.0fs, confirm_timeout=%.1fs]",
-            user, user_id, speech_mode.stop_word, max_timeout, confirm_timeout_s,
+            user_id, speech_mode.stop_word, max_timeout, confirm_timeout_s,
         )
 
         accumulated_transcripts: list[str] = []
@@ -190,27 +177,14 @@ class STTPipeline:
                 log.info("Stop-token max timeout (%.0fs) reached, returning accumulated", max_timeout)
                 break
 
-            # Listen for a single segment with the remaining time as timeout
-            sink = UserAudioSink(target_user=user)
+            # Reset VAD for the next segment; the persistent sink keeps
+            # receiving audio continuously — no attach/detach needed.
             self._vad.reset()
-
-            try:
-                voice_client.listen(sink)
-            except Exception:
-                log.exception("Failed to attach audio sink in stop_token loop")
-                break
 
             speech_audio: np.ndarray | None = None
             seg_start = time.monotonic()
 
-            try:
-                speech_audio = await self._wait_for_speech(sink, remaining, seg_start)
-            finally:
-                try:
-                    voice_client.stop_listening()
-                except Exception:
-                    pass
-                sink.cleanup()
+            speech_audio = await self._wait_for_speech(sink, remaining, seg_start)
 
             self._save_debug_audio()
 
@@ -230,7 +204,7 @@ class STTPipeline:
             if clear_found:
                 log.info("Clear token detected, waiting for silence confirmation")
                 confirmed = await self._confirm_silence(
-                    voice_client, user, confirm_timeout_s, overall_start, max_timeout,
+                    sink, confirm_timeout_s, overall_start, max_timeout,
                 )
                 if confirmed:
                     log.info("Clear token confirmed, resetting transcript")
@@ -259,7 +233,7 @@ class STTPipeline:
                     accumulated_transcripts.append(cleaned)
                 log.info("Stop word detected, waiting for silence confirmation")
                 confirmed = await self._confirm_silence(
-                    voice_client, user, confirm_timeout_s, overall_start, max_timeout,
+                    sink, confirm_timeout_s, overall_start, max_timeout,
                 )
                 if confirmed:
                     elapsed_ms = (time.monotonic() - overall_start) * 1000
@@ -292,13 +266,15 @@ class STTPipeline:
 
     async def _confirm_silence(
         self,
-        voice_client: discord.VoiceClient,
-        user: discord.Member | discord.User,
+        sink: UserAudioSink,
         confirm_timeout_s: float,
         overall_start: float,
         max_timeout: float,
     ) -> bool:
         """Wait for silence to confirm a stop word or clear token.
+
+        Uses the persistent audio sink — no attach/detach needed.  Audio
+        that accumulated during transcription is checked for speech.
 
         Returns ``True`` if no speech is detected within *confirm_timeout_s*
         (i.e. the token is confirmed).  Returns ``False`` if the user starts
@@ -315,26 +291,12 @@ class STTPipeline:
             # No time left — treat as confirmed
             return True
 
-        sink = UserAudioSink(target_user=user)
         self._vad.reset()
-
-        try:
-            voice_client.listen(sink)
-        except Exception:
-            log.exception("Failed to attach audio sink for silence confirmation")
-            return True  # Can't listen, assume confirmed
 
         confirm_start = time.monotonic()
         speech_audio: np.ndarray | None = None
 
-        try:
-            speech_audio = await self._wait_for_speech(sink, timeout, confirm_start)
-        finally:
-            try:
-                voice_client.stop_listening()
-            except Exception:
-                pass
-            sink.cleanup()
+        speech_audio = await self._wait_for_speech(sink, timeout, confirm_start)
 
         self._save_debug_audio()
 

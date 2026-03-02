@@ -15,6 +15,7 @@ from typing import Any
 
 import discord
 
+from server.audio_sink import UserAudioSink
 from server.audio_source import StreamingAudioSource, TTSAudioSource
 from server.chime import generate_chime, generate_clear_chime
 from server.config import Config, SpeechModeConfig
@@ -48,6 +49,7 @@ class CallSession:
     text_channel: discord.TextChannel | None
     started_at: float
     conversation_history: list[dict[str, str]] = field(default_factory=list)
+    sink: UserAudioSink | None = None
 
 
 class CallManager:
@@ -104,6 +106,15 @@ class CallManager:
             if session.channel_id == channel_id
         ]
         for call_id in to_remove:
+            session = self._sessions[call_id]
+            # Clean up persistent audio sink
+            if session.sink is not None:
+                try:
+                    session.voice_client.stop_listening()
+                except Exception:
+                    pass
+                session.sink.cleanup()
+                session.sink = None
             log.info(
                 "Auto-cleaning session %s because all users left channel %d",
                 call_id,
@@ -266,6 +277,14 @@ class CallManager:
             )
             return ""
 
+        # Ensure persistent audio sink is attached
+        sink = session.sink
+        if sink is None:
+            log.warning("No persistent audio sink; creating one as fallback")
+            sink = UserAudioSink(target_user=user)
+            voice_client.listen(sink)
+            session.sink = sink
+
         # Build the on_clear callback for stop_token mode
         smc = self._speech_mode_config
 
@@ -292,8 +311,7 @@ class CallManager:
 
         for attempt in range(1, self._MAX_BLANK_RETRIES + 1):
             transcript = await self._stt.listen(
-                voice_client=voice_client,
-                user=user,
+                sink=sink,
                 user_id=user_id,
                 speech_mode=self._speech_mode,
                 on_clear=on_clear,
@@ -418,10 +436,23 @@ class CallManager:
         )
         self._sessions[call_id] = session
 
+        # Resolve the target user and attach a persistent audio sink so that
+        # Discord's receive pipeline is warm before TTS even starts.
+        user = self._resolve_voice_user(voice_client, session)
+        if user is not None:
+            sink = UserAudioSink(target_user=user)
+            voice_client.listen(sink)
+            session.sink = sink
+            log.info("Persistent audio sink attached for user=%s", user)
+
         # Speak the opening message
         await self._tts_speak(voice_client, message, voice=voice)
         session.conversation_history.append({"role": "assistant", "content": message})
         self._post_to_text_channel(session, "assistant", message)
+
+        # Drain audio that accumulated during TTS playback
+        if session.sink is not None:
+            session.sink.reset()
 
         # Listen for the user's reply
         transcript = await self._stt_listen(voice_client, session)
@@ -457,6 +488,10 @@ class CallManager:
         session.conversation_history.append({"role": "assistant", "content": message})
         self._post_to_text_channel(session, "assistant", message)
 
+        # Drain audio that accumulated during TTS playback
+        if session.sink is not None:
+            session.sink.reset()
+
         transcript = await self._stt_listen(session.voice_client, session)
         session.conversation_history.append({"role": "user", "content": transcript})
         self._post_to_text_channel(session, "user", transcript)
@@ -491,6 +526,10 @@ class CallManager:
         session.conversation_history.append({"role": "assistant", "content": message})
         self._post_to_text_channel(session, "assistant", message)
 
+        # Drain audio that accumulated during TTS playback
+        if session.sink is not None:
+            session.sink.reset()
+
         return {"status": "ok"}
 
     async def end_call(
@@ -518,6 +557,15 @@ class CallManager:
         await self._tts_speak(session.voice_client, message, voice=voice)
         session.conversation_history.append({"role": "assistant", "content": message})
         self._post_to_text_channel(session, "assistant", message)
+
+        # Detach and clean up the persistent audio sink
+        if session.sink is not None:
+            try:
+                session.voice_client.stop_listening()
+            except Exception:
+                pass
+            session.sink.cleanup()
+            session.sink = None
 
         duration = time.monotonic() - session.started_at
         channel_id = session.channel_id

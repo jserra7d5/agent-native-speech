@@ -46,7 +46,7 @@ _SAMPLE_RATE: int = 16_000
 
 # Pre-speech padding: keep this many milliseconds of audio before the VAD
 # trigger so that the leading edge of words is not clipped.
-_PRE_SPEECH_PAD_MS: int = 300
+_PRE_SPEECH_PAD_MS: int = 500
 _PRE_SPEECH_PAD_SAMPLES: int = int(_SAMPLE_RATE * _PRE_SPEECH_PAD_MS / 1000)
 
 

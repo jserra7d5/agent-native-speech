@@ -12,16 +12,18 @@ Determined at construction by `config.stt.backend`:
 
 ### `listen()` Method
 
-Entry point called by `CallManager._stt_listen()`. Dispatches to one of two internal paths based on speech mode:
+Entry point called by `CallManager._stt_listen()`. Accepts a pre-attached `UserAudioSink` (persistent sink pattern) instead of creating its own. Dispatches to one of two internal paths based on speech mode:
 
-- **Pause mode** (`_listen_single`): Attach sink, wait for one complete utterance (VAD start -> VAD end), transcribe, correct, return.
-- **Stop token mode** (`_listen_stop_token`): Loop of single-segment listens. Each segment is transcribed and checked for the clear token and stop word (both with silence confirmation). Segments accumulate until stop word is confirmed or `max_timeout_s` elapses.
+- **Pause mode** (`_listen_single`): Reset VAD, wait for one complete utterance (VAD start -> VAD end), transcribe, correct, return.
+- **Stop token mode** (`_listen_stop_token`): Loop of single-segment listens using the persistent sink. Each segment is transcribed and checked for the clear token and stop word (both with silence confirmation). Segments accumulate until stop word is confirmed or `max_timeout_s` elapses.
+
+**Persistent sink pattern**: The `UserAudioSink` is created and attached to the voice client once in `CallManager.initiate_call()` and stored on the `CallSession`. It remains attached for the entire call duration. Audio accumulated during TTS playback is drained via `sink.reset()` before each listen call. This eliminates cold-start latency and ensures the VAD pre-buffer is always warm.
 
 Both `listen()` and `_listen_stop_token()` accept an optional `on_clear` callback parameter (`Callable[[], Awaitable[None]] | None`). When the clear token is confirmed in stop_token mode, this callback is invoked (used for chime playback).
 
 ### `_confirm_silence()` Method
 
-Helper method that validates stop word or clear token detection by checking for continued silence. Opens a fresh `UserAudioSink`, attaches it to the voice client, and monitors for speech within a configurable timeout window (`stop_confirm_ms`, default 1500ms). Returns `True` if silence is confirmed (no speech detected within the window), `False` if the user starts speaking again. This prevents accidental triggering when the stop word or clear token appears naturally in mid-sentence speech.
+Helper method that validates stop word or clear token detection by checking for continued silence. Uses the persistent audio sink (no attach/detach) and monitors for speech within a configurable timeout window (`stop_confirm_ms`, default 1500ms). Audio that accumulated during transcription is checked for speech. Returns `True` if silence is confirmed (no speech detected within the window), `False` if the user starts speaking again. This prevents accidental triggering when the stop word or clear token appears naturally in mid-sentence speech.
 
 ### `_wait_for_speech()` -- The Core Poll Loop
 
@@ -64,7 +66,7 @@ SPEAKING: audio -> speech buffer (every window, regardless of VAD result)
 
 ### Pre-Speech Padding
 
-A ring buffer holds the most recent 300ms of audio (`_PRE_SPEECH_PAD_SAMPLES = 4800` at 16kHz). When speech starts, this buffer is prepended to the speech audio so the leading edge of words is not clipped. The ring buffer evicts oldest windows when it exceeds the pad limit.
+A ring buffer holds the most recent 500ms of audio (`_PRE_SPEECH_PAD_SAMPLES = 8000` at 16kHz). When speech starts, this buffer is prepended to the speech audio so the leading edge of words is not clipped. The ring buffer evicts oldest windows when it exceeds the pad limit. Combined with the persistent sink pattern (audio always flowing), the pre-buffer is always warm by the time listening starts.
 
 ### Silence Duration Calculation
 
@@ -214,7 +216,7 @@ User says a keyword (default: "over") to signal they are done. Useful when the u
 
 **Silence confirmation** (`stop_confirm_ms`, default 1500ms):
 - After detecting either a stop word or clear token, `_confirm_silence()` is called
-- Opens a fresh audio sink and monitors for speech within the confirmation window
+- Uses the persistent audio sink and monitors for speech within the confirmation window
 - If the user stays silent: the token is confirmed and takes effect
 - If the user starts speaking: the token is cancelled and treated as normal speech
 - This prevents false positives when "over" or "clear" appear mid-sentence
