@@ -354,6 +354,9 @@ class VoiceBot(commands.Bot):
             voice: str | None = None,
             headless: bool = False,
         ) -> None:
+            # Expand ~ in directory path
+            directory = os.path.expanduser(directory)
+
             if self._spawn_manager is None or self._session_manager is None:
                 await interaction.response.send_message(
                     "Spawn system is not available yet. Please try again shortly.",
@@ -418,6 +421,10 @@ class VoiceBot(commands.Bot):
             recent: int | None = None,
             cli: str | None = None,
         ) -> None:
+            # Expand ~ in directory paths
+            if directory is not None:
+                directory = os.path.expanduser(directory)
+
             # If directory or recent requested, try SessionBrowser
             if directory is not None or recent is not None:
                 if self._session_browser is None:
