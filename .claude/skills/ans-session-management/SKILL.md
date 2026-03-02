@@ -71,6 +71,8 @@ Voice assignment follows a dual-mode rule:
 
 System voice is never assigned to agent sessions (reserved for switchboard announcements).
 
+Note: The `/voices` Discord slash command can change the default voice at runtime, which updates `VoicePool._default_voice`.
+
 ### Switchboard Message Flow
 
 Two directions:

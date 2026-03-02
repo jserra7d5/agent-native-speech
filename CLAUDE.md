@@ -40,7 +40,7 @@ See `config.json.example` for all settings. Legacy `.env` files still work (auto
 
 ## Discord Slash Commands
 
-`/correct`, `/corrections`, `/mode`, `/stopword`, `/spawn`, `/sessions`, `/kill`, `/resume`
+`/correct`, `/corrections`, `/mode`, `/stopword`, `/spawn`, `/sessions`, `/kill`, `/resume`, `/voices`
 
 ## Conventions
 

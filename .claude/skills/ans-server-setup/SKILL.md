@@ -121,7 +121,7 @@ bot_runner.bot.set_session_manager(session_manager)
 bot_runner.bot.set_session_browser(session_browser)
 ```
 
-Slash commands: `/correct`, `/corrections`, `/mode`, `/stopword`, `/spawn`, `/sessions`, `/kill`, `/resume`
+Slash commands: `/correct`, `/corrections`, `/mode`, `/stopword`, `/spawn`, `/sessions`, `/kill`, `/resume`, `/voices`
 
 DAVE E2EE patches are applied at module import time via monkey-patching `PacketRouter._do_run` and `AudioReader.callback`.
 

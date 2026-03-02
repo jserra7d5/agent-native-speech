@@ -186,6 +186,16 @@ Terminates an active session by name or ID:
 3. Calls `self._spawn_manager.kill_session(process_pid, terminal_pid)` to send SIGTERM
 4. Unregisters the session from SessionManager
 
+### /voices
+
+```
+/voices [set_default:<string>]
+```
+
+Lists all configured ElevenLabs voices with their voice IDs and role tags (default, system, pool).
+
+With `set_default`: Changes the runtime default voice. Validates the voice exists in `tts.elevenlabs.voices`. Updates `tts.default_voice`, `tts.elevenlabs.default_voice_id`, and the VoicePool's default at runtime.
+
 ### /resume
 
 ```
