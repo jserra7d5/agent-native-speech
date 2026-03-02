@@ -64,7 +64,7 @@ class VoicePool:
         """Create a VoicePool from the application Config."""
         return cls(
             pool_voices=config.voice_pool or None,
-            default_voice=config.tts.voice,
+            default_voice=config.tts.default_voice,
             system_voice=config.system_voice,
         )
 

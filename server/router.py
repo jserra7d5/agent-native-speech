@@ -23,7 +23,7 @@ from typing import Any
 import httpx
 from thefuzz import fuzz, process
 
-from server.config import RouterConfig
+from server.config import LLMConfig, RouterConfig
 
 log = logging.getLogger(__name__)
 
@@ -137,8 +137,9 @@ class IntentRouter:
     reply_current on any error.
     """
 
-    def __init__(self, config: RouterConfig) -> None:
-        self._config = config
+    def __init__(self, router_config: RouterConfig, llm_config: LLMConfig) -> None:
+        self._config = router_config
+        self._llm_config = llm_config
         self._client: httpx.AsyncClient | None = None
 
     async def classify(
@@ -176,11 +177,11 @@ class IntentRouter:
         """Call the LLM backend for classification."""
         base_url = self._resolve_base_url()
         headers = await self._build_headers()
-        timeout_s = self._config.timeout_ms / 1000.0
+        timeout_s = (self._config.timeout_ms or self._llm_config.timeout_ms) / 1000.0
 
         system_prompt = _build_system_prompt(active_sessions)
         payload: dict[str, Any] = {
-            "model": self._config.model,
+            "model": self._config.model or self._llm_config.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": transcript},
@@ -272,35 +273,35 @@ class IntentRouter:
 
     def _resolve_base_url(self) -> str:
         """Determine the API base URL from config and backend."""
-        if self._config.api_base_url:
-            return self._config.api_base_url.rstrip("/")
+        if self._llm_config.api_base_url:
+            return self._llm_config.api_base_url.rstrip("/")
 
-        backend = self._config.backend
+        backend = self._llm_config.backend
         url = _BACKEND_URLS.get(backend, "")
         if not url:
             raise ValueError(
                 f"No base URL configured for backend '{backend}'. "
-                "Set ROUTER_API_BASE_URL."
+                "Set LLM_API_BASE_URL."
             )
         return url
 
     async def _build_headers(self) -> dict[str, str]:
         """Build authorization headers based on the backend."""
         headers: dict[str, str] = {"Content-Type": "application/json"}
-        backend = self._config.backend
+        backend = self._llm_config.backend
 
         if backend == "openrouter":
-            if not self._config.api_key:
-                raise ValueError("ROUTER_API_KEY required for openrouter backend")
-            headers["Authorization"] = f"Bearer {self._config.api_key}"
+            if not self._llm_config.api_key:
+                raise ValueError("LLM_API_KEY required for openrouter backend")
+            headers["Authorization"] = f"Bearer {self._llm_config.api_key}"
 
         elif backend == "codex_oauth":
-            token = _read_codex_auth(self._config.codex_auth_path)
+            token = _read_codex_auth(self._llm_config.codex_auth_path)
             headers["Authorization"] = f"Bearer {token}"
 
         elif backend == "openai_compatible":
-            if self._config.api_key:
-                headers["Authorization"] = f"Bearer {self._config.api_key}"
+            if self._llm_config.api_key:
+                headers["Authorization"] = f"Bearer {self._llm_config.api_key}"
 
         return headers
 

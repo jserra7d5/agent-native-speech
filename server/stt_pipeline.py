@@ -43,8 +43,20 @@ class STTPipeline:
     def __init__(self, config: Config) -> None:
         self._config = config
         self._vad = SpeechDetector(config.vad)
-        self._transcriber = Transcriber(config.stt)
-        self._corrections = CorrectionManager(config.correction, config.anthropic_api_key)
+
+        # Select STT backend based on config
+        if config.stt.backend == "elevenlabs":
+            from server.elevenlabs_stt import ElevenLabsTranscriber  # noqa: PLC0415
+
+            self._transcriber = ElevenLabsTranscriber(
+                config.elevenlabs_api_key, config.stt
+            )
+        else:
+            self._transcriber = Transcriber(config.stt)
+
+        self._corrections = CorrectionManager(
+            config.correction, config.llm, config.anthropic_api_key
+        )
 
     @property
     def correction_manager(self) -> CorrectionManager:

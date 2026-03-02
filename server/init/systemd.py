@@ -15,14 +15,13 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory={project_dir}
-ExecStart={venv_python} -m server.main --transport http
+ExecStart={venv_python} -m server.main --transport http --config {config_path}
 Restart=always
 RestartSec=10
 StartLimitIntervalSec=300
 StartLimitBurst=5
 StandardOutput=journal
 StandardError=journal
-Environment=DOTENV_PATH={config_path}
 
 [Install]
 WantedBy=default.target

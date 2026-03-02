@@ -1,0 +1,79 @@
+{
+  "discord_token": "YOUR_DISCORD_BOT_TOKEN",
+  "anthropic_api_key": "",
+  "elevenlabs_api_key": "",
+  "default_channel_id": null,
+  "preload_models": false,
+
+  "stt": {
+    "backend": "local",
+    "model": "medium",
+    "device": "cuda",
+    "compute_type": "float16",
+    "elevenlabs": {
+      "model_id": "scribe_v2",
+      "language_code": "eng"
+    }
+  },
+
+  "tts": {
+    "backend": "elevenlabs",
+    "default_voice": "Ryan",
+    "device": "cuda",
+    "voices_dir": "voices",
+    "elevenlabs": {
+      "model_id": "eleven_flash_v2_5",
+      "default_voice_id": "CYDzJWiIyIiQuhRB4r1K",
+      "voices": {
+        "Ryan": "CYDzJWiIyIiQuhRB4r1K",
+        "Aiden": "pNInz6obpgDQGcFmaJgB",
+        "system": "21m00Tcm4TlvDq8ikWAM"
+      }
+    }
+  },
+
+  "vad": {
+    "silence_duration_ms": 1500,
+    "threshold": 0.5
+  },
+
+  "correction": {
+    "model": ""
+  },
+
+  "speech_mode": {
+    "mode": "pause",
+    "stop_word": "over",
+    "max_timeout_s": 60.0
+  },
+
+  "spawn": {
+    "default_cli": "claude",
+    "terminal_override": ""
+  },
+
+  "llm": {
+    "backend": "openrouter",
+    "model": "meta-llama/llama-4-scout",
+    "api_key": "",
+    "api_base_url": "",
+    "codex_auth_path": "~/.codex/auth.json",
+    "timeout_ms": 2000
+  },
+
+  "router": {
+    "enabled": false,
+    "model": "",
+    "timeout_ms": 500
+  },
+
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "transport": "http"
+  },
+
+  "voice_pool": ["Ryan", "Aiden"],
+  "system_voice": "system",
+  "max_queue_depth": 20
+}

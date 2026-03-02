@@ -284,8 +284,9 @@ class SessionManager:
 
         If session_id is provided, links the call to that agent session.
         """
+        voice = self.resolve_voice(session_id) if session_id else None
         result = await self._call_manager.initiate_call(
-            channel_id=channel_id, message=message
+            channel_id=channel_id, message=message, voice=voice
         )
         call_id = result["call_id"]
 
@@ -305,8 +306,10 @@ class SessionManager:
         self, call_id: str, message: str
     ) -> dict[str, Any]:
         """Speak and listen on an active call."""
+        agent_session = self._find_session_by_call_id(call_id)
+        voice = self.resolve_voice(agent_session.session_id) if agent_session else None
         result = await self._call_manager.continue_call(
-            call_id=call_id, message=message
+            call_id=call_id, message=message, voice=voice
         )
         self._touch_session_by_call_id(call_id)
         return result
@@ -315,8 +318,10 @@ class SessionManager:
         self, call_id: str, message: str
     ) -> dict[str, Any]:
         """Speak without listening."""
+        agent_session = self._find_session_by_call_id(call_id)
+        voice = self.resolve_voice(agent_session.session_id) if agent_session else None
         result = await self._call_manager.speak_to_user(
-            call_id=call_id, message=message
+            call_id=call_id, message=message, voice=voice
         )
         self._touch_session_by_call_id(call_id)
         return result
@@ -327,8 +332,9 @@ class SessionManager:
         """End a call and clean up."""
         # Find the agent session before ending (CallManager removes it)
         agent_session = self._find_session_by_call_id(call_id)
+        voice = self.resolve_voice(agent_session.session_id) if agent_session else None
         result = await self._call_manager.end_call(
-            call_id=call_id, message=message
+            call_id=call_id, message=message, voice=voice
         )
         if agent_session:
             agent_session.call_session = None

@@ -9,8 +9,9 @@ MCP server that lets AI agents call users on Discord voice channels. Supports mu
 - **Discord bot** (`server/discord_bot.py`) -- background thread via `BotRunner`
 - **SessionManager** (`server/session_manager.py`) -- multi-session registry wrapping CallManager
 - **CallManager** (`server/call_manager.py`) -- bridges MCP tools to Discord voice ops
-- **TTS** -- pluggable via `TTSBackend` protocol: local Qwen3-TTS (`tts_engine.py`) or ElevenLabs (`elevenlabs_tts.py`)
-- **STT** (`server/stt_pipeline.py`) -- Silero VAD + Faster-Whisper + LLM correction
+- **TTS** -- pluggable via `TTSBackend` protocol: local Qwen3-TTS (`tts_engine.py`) or ElevenLabs (`elevenlabs_tts.py`) with voice pooling
+- **STT** (`server/stt_pipeline.py`) -- Silero VAD + transcriber (local Whisper or ElevenLabs Scribe) + LLM correction
+- **ElevenLabs STT** (`server/elevenlabs_stt.py`) -- cloud STT via ElevenLabs Scribe API
 - **Speech modes** (`server/speech_mode.py`) -- pause (silence) and stop_token modes
 - **Voice pool** (`server/voice_pool.py`) -- per-session TTS voice assignment
 - **Switchboard** (`server/switchboard.py`) -- multi-session message queuing/routing
@@ -24,13 +25,14 @@ MCP server that lets AI agents call users on Discord voice channels. Supports mu
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e '.[tts]'
-cp .env.example .env  # fill in DISCORD_TOKEN, etc.
-python -m server.main                    # HTTP transport (default)
-python -m server.main --transport stdio  # stdio (legacy single-client)
-python -m server.init                    # first-time setup wizard
+cp config.json.example config.json  # fill in discord_token, etc.
+python -m server.main                          # HTTP transport (default)
+python -m server.main --config config.json     # explicit config path
+python -m server.main --transport stdio        # stdio (legacy single-client)
+python -m server.init                          # first-time setup wizard
 ```
 
-See `.env.example` for all environment variables. Key ones: `DISCORD_TOKEN`, `TTS_BACKEND` (local/elevenlabs), `TTS_VOICE`, `SPEECH_MODE` (pause/stop_token), `SERVER_TRANSPORT` (http/stdio), `DEFAULT_CLI` (claude/codex).
+See `config.json.example` for all settings. Legacy `.env` files still work (auto-detected). Key config: `discord_token`, `tts.backend` (local/elevenlabs), `tts.default_voice`, `stt.backend` (local/elevenlabs), `speech_mode.mode` (pause/stop_token), `server.transport` (http/stdio), `llm` (shared LLM backend for router + correction).
 
 ## MCP Tools
 
@@ -59,4 +61,4 @@ curl http://127.0.0.1:8765/health  # health check (HTTP mode)
 
 ## Files to Never Commit
 
-`.env`, `voices/*/prompt_cache.pt`, `data/corrections/*.json`, `data/sessions/`
+`.env`, `config.json`, `voices/*/prompt_cache.pt`, `data/corrections/*.json`, `data/sessions/`

@@ -115,6 +115,7 @@ class CallManager:
         self,
         voice_client: discord.VoiceClient,
         message: str,
+        voice: str | None = None,
     ) -> None:
         """Synthesise speech and play it over the voice channel.
 
@@ -144,7 +145,7 @@ class CallManager:
         chunks = _preprocess(message)
         if len(chunks) <= 1:
             audio, sample_rate = await loop.run_in_executor(
-                None, self._tts_engine.synthesize, message
+                None, self._tts_engine.synthesize, message, voice
             )
             source = TTSAudioSource.from_audio(audio, sample_rate=sample_rate)
             try:
@@ -172,7 +173,7 @@ class CallManager:
 
         def _synth_worker() -> None:
             try:
-                for audio, sr in self._tts_engine.synthesize_streamed(message):
+                for audio, sr in self._tts_engine.synthesize_streamed(message, voice):
                     source.add_segment(audio, sr)
             except Exception:
                 log.exception("Error in TTS synthesis worker")
@@ -288,6 +289,7 @@ class CallManager:
         self,
         channel_id: int,
         message: str,
+        voice: str | None = None,
     ) -> dict[str, Any]:
         """Join a voice channel, speak an opening message, and listen for a reply.
 
@@ -326,7 +328,7 @@ class CallManager:
         self._sessions[call_id] = session
 
         # Speak the opening message
-        await self._tts_speak(voice_client, message)
+        await self._tts_speak(voice_client, message, voice=voice)
         session.conversation_history.append({"role": "assistant", "content": message})
         self._post_to_text_channel(session, "assistant", message)
 
@@ -342,6 +344,7 @@ class CallManager:
         self,
         call_id: str,
         message: str,
+        voice: str | None = None,
     ) -> dict[str, Any]:
         """Speak a message to the user and listen for their response.
 
@@ -359,7 +362,7 @@ class CallManager:
         session = self._get_session(call_id)
         log.info("Continuing call %s: %r", call_id, message)
 
-        await self._tts_speak(session.voice_client, message)
+        await self._tts_speak(session.voice_client, message, voice=voice)
         session.conversation_history.append({"role": "assistant", "content": message})
         self._post_to_text_channel(session, "assistant", message)
 
@@ -373,6 +376,7 @@ class CallManager:
         self,
         call_id: str,
         message: str,
+        voice: str | None = None,
     ) -> dict[str, Any]:
         """Speak a message to the user without waiting for a response.
 
@@ -392,7 +396,7 @@ class CallManager:
         session = self._get_session(call_id)
         log.info("Speaking to user on call %s: %r", call_id, message)
 
-        await self._tts_speak(session.voice_client, message)
+        await self._tts_speak(session.voice_client, message, voice=voice)
         session.conversation_history.append({"role": "assistant", "content": message})
         self._post_to_text_channel(session, "assistant", message)
 
@@ -402,6 +406,7 @@ class CallManager:
         self,
         call_id: str,
         message: str,
+        voice: str | None = None,
     ) -> dict[str, Any]:
         """Speak a farewell message, leave the voice channel, and clean up.
 
@@ -419,7 +424,7 @@ class CallManager:
         session = self._get_session(call_id)
         log.info("Ending call %s with message: %r", call_id, message)
 
-        await self._tts_speak(session.voice_client, message)
+        await self._tts_speak(session.voice_client, message, voice=voice)
         session.conversation_history.append({"role": "assistant", "content": message})
         self._post_to_text_channel(session, "assistant", message)
 

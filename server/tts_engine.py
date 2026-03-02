@@ -181,7 +181,7 @@ class TTSEngine:
         log.debug(
             "TTSEngine created (voice=%s device=%s) -- "
             "model will be loaded on first synthesis",
-            config.voice,
+            config.default_voice,
             config.device,
         )
 
@@ -386,7 +386,7 @@ class TTSEngine:
 
     def _resolve_profile(self, voice: str | None) -> VoiceProfile:
         """Look up a voice profile by name, falling back to the configured default."""
-        name = voice or self._config.voice
+        name = voice or self._config.default_voice
         try:
             return self._registry.get(name)
         except KeyError:

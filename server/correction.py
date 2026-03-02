@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anthropic
+import httpx
 
-from server.config import CorrectionConfig
+from server.config import CorrectionConfig, LLMConfig
 
 if TYPE_CHECKING:
     pass
@@ -46,17 +47,33 @@ class CorrectionManager:
         Anthropic API key used to authenticate the ``AsyncAnthropic`` client.
     """
 
-    def __init__(self, config: CorrectionConfig, anthropic_api_key: str) -> None:
+    def __init__(self, config: CorrectionConfig, llm_config: LLMConfig, anthropic_api_key: str) -> None:
         self._config = config
+        self._llm_config = llm_config
+
+        # Resolve model: per-tool override -> shared LLM config -> hardcoded default
+        self._model: str = config.model or llm_config.model or "claude-haiku-4-5-20251001"
+
         # LLM correction is optional — if no API key, corrections are still
         # stored but the LLM pass is skipped entirely.
         if anthropic_api_key:
             self._client: anthropic.AsyncAnthropic | None = anthropic.AsyncAnthropic(
                 api_key=anthropic_api_key
             )
+            self._httpx_client: httpx.AsyncClient | None = None
+        elif llm_config.backend:
+            self._client = None
+            self._httpx_client = httpx.AsyncClient()
+            log.info(
+                "Using LLM backend %r for correction (model=%s)",
+                llm_config.backend,
+                self._model,
+            )
         else:
             self._client = None
-            log.info("No Anthropic API key; LLM-based correction disabled")
+            self._httpx_client = None
+            log.info("No Anthropic API key or LLM backend; LLM-based correction disabled")
+
         # In-memory cache: user_id -> {wrong: right, ...}
         self._cache: dict[str, dict[str, str]] = {}
 
@@ -65,7 +82,7 @@ class CorrectionManager:
         log.debug(
             "CorrectionManager initialised; data_dir=%s model=%s",
             self._config.data_dir,
-            self._config.model,
+            self._model,
         )
 
     # ------------------------------------------------------------------
@@ -321,30 +338,74 @@ class CorrectionManager:
             )
             return transcript
 
-        if self._client is None:
+        if self._client is None and self._httpx_client is None:
             log.debug(
-                "LLM correction disabled (no API key); returning transcript unchanged"
+                "LLM correction disabled (no API key or backend); returning transcript unchanged"
             )
             return transcript
 
         system_prompt = self._build_system_prompt(corrections)
         log.debug(
             "Sending transcript to %s for correction (user=%s, %d correction(s))",
-            self._config.model,
+            self._model,
             user_id,
             len(corrections),
         )
 
         try:
-            response = await self._client.messages.create(
-                model=self._config.model,
-                max_tokens=1024,
-                system=system_prompt,
-                messages=[
-                    {"role": "user", "content": transcript},
-                ],
-            )
-            corrected: str = response.content[0].text.strip()
+            if self._client:
+                # Anthropic native client path (backward compat)
+                response = await self._client.messages.create(
+                    model=self._model,
+                    max_tokens=1024,
+                    system=system_prompt,
+                    messages=[
+                        {"role": "user", "content": transcript},
+                    ],
+                )
+                corrected: str = response.content[0].text.strip()
+
+            elif self._httpx_client:
+                # OpenAI-compatible chat completions path
+                headers: dict[str, str] = {"Content-Type": "application/json"}
+                backend = self._llm_config.backend
+                if backend == "openrouter":
+                    headers["Authorization"] = f"Bearer {self._llm_config.api_key}"
+                elif backend == "codex_oauth":
+                    from server.router import _read_codex_auth
+                    token = _read_codex_auth(self._llm_config.codex_auth_path)
+                    headers["Authorization"] = f"Bearer {token}"
+                elif backend == "openai_compatible":
+                    if self._llm_config.api_key:
+                        headers["Authorization"] = f"Bearer {self._llm_config.api_key}"
+
+                # Resolve base URL
+                _BACKEND_URLS = {
+                    "openrouter": "https://openrouter.ai/api/v1",
+                    "codex_oauth": "https://api.openai.com/v1",
+                }
+                base_url = self._llm_config.api_base_url or _BACKEND_URLS.get(backend, "")
+
+                payload = {
+                    "model": self._model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": transcript},
+                    ],
+                    "temperature": 0.0,
+                    "max_tokens": 1024,
+                }
+
+                resp = await self._httpx_client.post(
+                    f"{base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                    timeout=self._llm_config.timeout_ms / 1000.0,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                corrected = data["choices"][0]["message"]["content"].strip()
+
             log.debug(
                 "Correction result for user %s: %r -> %r",
                 user_id,

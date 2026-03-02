@@ -372,7 +372,7 @@ def _require(args: dict[str, Any], key: str) -> Any:
 
 
 def _parse_args() -> argparse.Namespace:
-    """Parse CLI arguments for transport selection."""
+    """Parse CLI arguments for transport and config selection."""
     parser = argparse.ArgumentParser(
         description="agent-native-speech MCP voice server",
     )
@@ -382,6 +382,11 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Transport mode: 'http' (Streamable HTTP, default) or 'stdio' (legacy single-client)",
     )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to config file (JSON or .env). Auto-detects if not specified.",
+    )
     return parser.parse_args()
 
 
@@ -389,9 +394,9 @@ def _parse_args() -> argparse.Namespace:
 # Bootstrap & main
 # ---------------------------------------------------------------------------
 
-def _load_and_validate_config() -> Config:
-    """Load Config from environment variables and abort on validation errors."""
-    config = Config.from_env()
+def _load_and_validate_config(config_path: str | None = None) -> Config:
+    """Load Config and abort on validation errors."""
+    config = Config.load(config_path)
     errors = config.validate()
     if errors:
         for error in errors:
@@ -406,9 +411,10 @@ def _create_tts_engine(config: Config) -> TTSBackend:
         from server.elevenlabs_tts import ElevenLabsTTSEngine  # noqa: PLC0415
 
         return ElevenLabsTTSEngine(
-            api_key=config.tts.elevenlabs_api_key,
+            api_key=config.elevenlabs_api_key,
             voice_id=config.tts.elevenlabs_voice_id,
             model_id=config.tts.elevenlabs_model_id,
+            voices=config.tts.elevenlabs_voices or None,
         )
 
     # Default: local Qwen3-TTS
@@ -576,9 +582,9 @@ async def _run_http(
             raise exc
 
 
-async def run(transport: str | None = None) -> None:
+async def run(transport: str | None = None, config_path: str | None = None) -> None:
     """Initialise all components and run the MCP server until shutdown."""
-    config = _load_and_validate_config()
+    config = _load_and_validate_config(config_path)
     log.info("Configuration loaded (token=***%s)", config.discord_token[-4:])
 
     # Determine transport: CLI flag > config > default
@@ -620,7 +626,7 @@ async def run(transport: str | None = None) -> None:
 def main() -> None:
     """Entry point -- runs the async server loop."""
     cli_args = _parse_args()
-    asyncio.run(run(transport=cli_args.transport))
+    asyncio.run(run(transport=cli_args.transport, config_path=cli_args.config))
 
 
 if __name__ == "__main__":

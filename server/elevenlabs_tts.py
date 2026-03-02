@@ -8,6 +8,7 @@ engine, so downstream code (CallManager, audio_source) requires zero changes.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Iterator
 
 import numpy as np
@@ -38,16 +39,19 @@ class ElevenLabsTTSEngine:
         api_key: str,
         voice_id: str,
         model_id: str = "eleven_flash_v2_5",
+        voices: dict[str, str] | None = None,
     ) -> None:
         self._api_key = api_key
-        self._voice_id = voice_id
+        self._default_voice_id = voice_id
         self._model_id = model_id
+        self._voices: dict[str, str] = voices or {}
         self._client = None  # Lazy init
 
         log.info(
-            "ElevenLabsTTSEngine created (voice_id=%s, model=%s)",
+            "ElevenLabsTTSEngine created (voice_id=%s, model=%s, named_voices=%d)",
             voice_id,
             model_id,
+            len(self._voices),
         )
 
     def _get_client(self):
@@ -58,6 +62,44 @@ class ElevenLabsTTSEngine:
             self._client = ElevenLabs(api_key=self._api_key)
             log.debug("ElevenLabs client initialized")
         return self._client
+
+    # ------------------------------------------------------------------
+    # Voice ID resolution
+    # ------------------------------------------------------------------
+
+    _RAW_VOICE_ID_RE = re.compile(r"^[A-Za-z0-9]{16,}$")
+
+    def _resolve_voice_id(self, voice: str | None) -> str:
+        """Resolve a *voice* argument to a concrete ElevenLabs voice ID.
+
+        Resolution order:
+        1. ``None`` -> default voice ID.
+        2. Name present in the ``self._voices`` mapping -> mapped ID.
+        3. Alphanumeric string longer than 15 characters -> raw voice ID
+           passthrough (assumed to be a literal ElevenLabs voice ID).
+        4. Unknown name -> log a warning and fall back to the default.
+        """
+        if voice is None:
+            return self._default_voice_id
+
+        # Check named voice map (case-sensitive)
+        if voice in self._voices:
+            resolved = self._voices[voice]
+            log.debug("Resolved voice name %r -> %s", voice, resolved)
+            return resolved
+
+        # Looks like a raw ElevenLabs voice ID?
+        if self._RAW_VOICE_ID_RE.match(voice):
+            log.debug("Passing through raw voice ID: %s", voice)
+            return voice
+
+        # Unknown name -- fall back
+        log.warning(
+            "Unknown voice name %r; falling back to default voice %s",
+            voice,
+            self._default_voice_id,
+        )
+        return self._default_voice_id
 
     # ------------------------------------------------------------------
     # TTSBackend protocol
@@ -79,17 +121,18 @@ class ElevenLabsTTSEngine:
             )
 
         full_text = " ".join(chunks)
+        resolved_voice_id = self._resolve_voice_id(voice)
         log.debug(
             "ElevenLabs synthesize: %d chars, voice_id=%s, model=%s",
             len(full_text),
-            self._voice_id,
+            resolved_voice_id,
             self._model_id,
         )
 
         client = self._get_client()
         audio_bytes = client.text_to_speech.convert(
             text=full_text,
-            voice_id=self._voice_id,
+            voice_id=resolved_voice_id,
             model_id=self._model_id,
             output_format="pcm_24000",
         )
@@ -117,16 +160,17 @@ class ElevenLabsTTSEngine:
             return
 
         full_text = " ".join(chunks)
+        resolved_voice_id = self._resolve_voice_id(voice)
         log.debug(
             "ElevenLabs synthesize_streamed: %d chars, voice_id=%s",
             len(full_text),
-            self._voice_id,
+            resolved_voice_id,
         )
 
         client = self._get_client()
         byte_stream = client.text_to_speech.stream(
             text=full_text,
-            voice_id=self._voice_id,
+            voice_id=resolved_voice_id,
             model_id=self._model_id,
             output_format="pcm_24000",
         )
