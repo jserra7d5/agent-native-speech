@@ -2,7 +2,10 @@
 __pycache__/
 *.pyc
 .env
+config.json
 .mcp.json
+.claude/
+.specify/
 data/corrections/*.json
 data/sessions/
 voices/*/prompt_cache.pt
