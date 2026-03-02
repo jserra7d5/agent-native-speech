@@ -11,6 +11,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 from typing import Any
 
 from server.config import Config
@@ -114,6 +115,9 @@ class SpawnManager:
         self._config = config
         self._detector = TerminalDetector(config.spawn.terminal_override)
         self._server_url = config.spawn.server_url
+        # Write MCP config to a temp file so --mcp-config (which is variadic)
+        # doesn't consume subsequent positional arguments like the prompt.
+        self._mcp_config_path = self._write_mcp_config_file()
 
     @property
     def default_cli(self) -> str:
@@ -266,14 +270,7 @@ class SpawnManager:
                 prompt as a positional argument instead.
         """
         if cli == "claude":
-            mcp_config = json.dumps({
-                "mcpServers": {
-                    "voice-agent": {
-                        "url": self._server_url,
-                    }
-                }
-            })
-            cmd = ["claude", "--mcp-config", mcp_config]
+            cmd = ["claude", "--mcp-config", self._mcp_config_path]
             if resume_session_id:
                 cmd.extend(["--resume", resume_session_id])
             if headless:
@@ -295,6 +292,26 @@ class SpawnManager:
             ]
         else:
             raise ValueError(f"Unsupported CLI: {cli!r}")
+
+    def _write_mcp_config_file(self) -> str:
+        """Write MCP server config to a temp file and return its path.
+
+        Claude Code's ``--mcp-config`` flag is variadic, so passing inline
+        JSON would cause it to consume subsequent positional arguments (like
+        the prompt).  Writing to a file avoids this.
+        """
+        config_data = {
+            "mcpServers": {
+                "voice-agent": {
+                    "url": self._server_url,
+                }
+            }
+        }
+        fd, path = tempfile.mkstemp(prefix="voice-agent-mcp-", suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            json.dump(config_data, f)
+        log.info("Wrote MCP config to %s", path)
+        return path
 
     def _build_terminal_command(
         self,
