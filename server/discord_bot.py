@@ -532,7 +532,7 @@ class VoiceBot(commands.Bot):
             name="kill",
             description="Terminate an active voice session",
         )
-        @app_commands.describe(session="Session name or ID to terminate")
+        @app_commands.describe(session="Session name, ID, or 'all' to terminate everything")
         async def kill_cmd(interaction: discord.Interaction, session: str) -> None:
             if self._session_manager is None or self._spawn_manager is None:
                 await interaction.response.send_message(
@@ -542,6 +542,34 @@ class VoiceBot(commands.Bot):
                 return
 
             active = self._session_manager.list_active_sessions()
+
+            if session.lower() == "all":
+                if not active:
+                    await interaction.response.send_message(
+                        "No active sessions.", ephemeral=True,
+                    )
+                    return
+                count = 0
+                for s in active:
+                    try:
+                        full = self._session_manager.get_session(s["session_id"])
+                        self._spawn_manager.kill_session(
+                            process_pid=full.process_pid,
+                            terminal_pid=full.terminal_pid,
+                        )
+                    except KeyError:
+                        pass
+                    self._session_manager.unregister_session(s["session_id"])
+                    count += 1
+                log.info(
+                    "Slash /kill all: user=%s terminated %d sessions",
+                    interaction.user.id, count,
+                )
+                await interaction.response.send_message(
+                    f"Terminated **{count}** session(s).", ephemeral=True,
+                )
+                return
+
             matched = None
             for s in active:
                 if (s["session_id"] == session
