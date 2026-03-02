@@ -97,7 +97,9 @@ _TOOLS: list[dict[str, Any]] = [
         "name": "continue_call",
         "description": (
             "Speak a message to the user during an active call and listen for their reply. "
-            "Returns the STT transcript of the user's response."
+            "Returns the STT transcript of the user's response. "
+            "This is the PRIMARY tool for voice conversation — use this whenever you want "
+            "to talk to the user, including status updates, questions, and reports."
         ),
         "inputSchema": {
             "type": "object",
@@ -117,8 +119,10 @@ _TOOLS: list[dict[str, Any]] = [
     {
         "name": "speak_to_user",
         "description": (
-            "Speak a one-way message to the user without waiting for a response. "
-            "Useful for status updates or notifications during an active call."
+            "Speak a one-way message without listening for a reply. ONLY use this when you "
+            "will immediately follow up with more work in the same turn (e.g. a brief "
+            "'working on it' before running commands). Do NOT use this as the last tool "
+            "call in your turn — use continue_call instead so the user can respond."
         ),
         "inputSchema": {
             "type": "object",
