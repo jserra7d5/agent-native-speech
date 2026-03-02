@@ -21,6 +21,7 @@ from typing import Any
 from server.call_manager import CallManager, CallSession
 from server.config import Config
 from server.discord_bot import BotRunner
+from server.message_manager import MessageManager, MessageSession
 from server.speech_mode import SpeechModeManager
 from server.stt_pipeline import STTPipeline
 from server.switchboard import Switchboard
@@ -65,6 +66,9 @@ class AgentSession:
     last_activity: float = field(default_factory=time.time)
     owning_user_id: str = ""
     call_session: CallSession | None = None
+    mode: str = "voice"  # "voice" or "message"
+    text_channel_id: int | None = None
+    message_session: MessageSession | None = None
 
 
 class SessionManager:
@@ -81,11 +85,13 @@ class SessionManager:
         tts_engine: TTSBackend,
         speech_mode_manager: SpeechModeManager | None = None,
         config: Config | None = None,
+        message_manager: MessageManager | None = None,
     ) -> None:
         self._call_manager = CallManager(
             bot_runner, stt_pipeline, tts_engine, speech_mode_manager,
             config=config,
         )
+        self._message_manager = message_manager
         self._runner = bot_runner
         self._sessions: dict[str, AgentSession] = {}
         # MCP session ID -> agent session ID mapping
@@ -103,6 +109,15 @@ class SessionManager:
         """Access the underlying CallManager for voice operations."""
         return self._call_manager
 
+    @property
+    def message_manager(self) -> MessageManager | None:
+        """Access the underlying MessageManager for text message operations."""
+        return self._message_manager
+
+    def set_message_manager(self, manager: MessageManager) -> None:
+        """Set the MessageManager after construction (for late wiring)."""
+        self._message_manager = manager
+
     # ------------------------------------------------------------------
     # Session lifecycle
     # ------------------------------------------------------------------
@@ -118,6 +133,8 @@ class SessionManager:
         terminal_pid: int | None = None,
         owning_user_id: str = "",
         requested_voice: str | None = None,
+        mode: str = "voice",
+        text_channel_id: int | None = None,
     ) -> AgentSession:
         """Register a new agent session.
 
@@ -131,6 +148,8 @@ class SessionManager:
             terminal_pid: OS PID of the terminal emulator.
             owning_user_id: Discord user ID of the spawner.
             requested_voice: Optional explicit TTS voice preference.
+            mode: Session mode ("voice" or "message").
+            text_channel_id: Discord text channel ID for message mode.
 
         Returns:
             The newly created AgentSession.
@@ -157,12 +176,14 @@ class SessionManager:
             terminal_pid=terminal_pid,
             mcp_session_id=mcp_session_id,
             owning_user_id=owning_user_id,
+            mode=mode,
+            text_channel_id=text_channel_id,
         )
         self._sessions[session_id] = session
         if mcp_session_id:
             self._mcp_to_session[mcp_session_id] = session_id
 
-        # Assign a TTS voice from the pool
+        # Assign a TTS voice from the pool (even for message mode, for consistency)
         assigned_voice = self._voice_pool.assign_voice(session_id, requested_voice)
         session.voice_name = assigned_voice
 
@@ -170,11 +191,12 @@ class SessionManager:
         self._switchboard.register_session(session_id, session_name)
 
         log.info(
-            "Registered session %s (%s) mcp=%s voice=%s",
+            "Registered session %s (%s) mcp=%s voice=%s mode=%s",
             session_id,
             session_name,
             mcp_session_id,
             assigned_voice,
+            mode,
         )
         return session
 
@@ -209,6 +231,18 @@ class SessionManager:
             if call_id in self._call_manager._sessions:
                 del self._call_manager._sessions[call_id]
 
+        # Clean up any active message session in MessageManager
+        if session.message_session and self._message_manager:
+            call_id = session.message_session.call_id
+            if call_id in self._message_manager._sessions:
+                del self._message_manager._sessions[call_id]
+            # Cancel any pending reply future
+            pending = self._message_manager._pending_replies.pop(call_id, None)
+            if pending is not None:
+                future, loop = pending
+                if not future.done():
+                    loop.call_soon_threadsafe(future.cancel)
+
         session.status = "disconnected"
         log.info("Unregistered session %s (%s)", session_id, session.session_name)
 
@@ -240,6 +274,7 @@ class SessionManager:
                 "voice": session.voice_name or "",
                 "status": session.status,
                 "spawn_mode": session.spawn_mode,
+                "mode": session.mode,
                 "started_at": time.strftime(
                     "%Y-%m-%dT%H:%M:%SZ", time.gmtime(session.started_at)
                 ),
@@ -275,16 +310,51 @@ class SessionManager:
     # Voice operations (delegated to CallManager)
     # ------------------------------------------------------------------
 
+    def _get_mode_for_call_id(self, call_id: str) -> str:
+        """Determine the mode (voice/message) for a given call_id."""
+        # Check message manager first
+        if self._message_manager and call_id in self._message_manager._sessions:
+            return "message"
+        # Check call manager
+        if call_id in self._call_manager._sessions:
+            return "voice"
+        # Fall back to checking agent sessions
+        agent_session = self._find_session_by_call_id(call_id)
+        if agent_session:
+            return agent_session.mode
+        return "voice"
+
     async def initiate_call(
         self,
         channel_id: int,
         message: str,
         session_id: str | None = None,
     ) -> dict[str, Any]:
-        """Join a voice channel, speak, and listen.
+        """Join a voice channel or send a text message, depending on mode.
 
         If session_id is provided, links the call to that agent session.
+        Routes to MessageManager for message-mode sessions.
         """
+        # Check if this session is in message mode
+        agent_session = self._sessions.get(session_id) if session_id else None
+        if agent_session and agent_session.mode == "message":
+            if self._message_manager is None:
+                raise RuntimeError("MessageManager not available for message mode")
+            result = await self._message_manager.initiate_call(
+                channel_id=channel_id, message=message,
+                user_id=agent_session.owning_user_id,
+            )
+            call_id = result["call_id"]
+            # Link the message session to the agent session
+            msg_session = self._message_manager._sessions.get(call_id)
+            if msg_session:
+                agent_session.message_session = msg_session
+                agent_session.status = "working"
+                agent_session.last_activity = time.time()
+            result["session_id"] = session_id
+            return result
+
+        # Voice mode (default)
         voice = self.resolve_voice(session_id) if session_id else None
         result = await self._call_manager.initiate_call(
             channel_id=channel_id, message=message, voice=voice
@@ -306,7 +376,17 @@ class SessionManager:
     async def continue_call(
         self, call_id: str, message: str
     ) -> dict[str, Any]:
-        """Speak and listen on an active call."""
+        """Speak/send and listen/wait on an active call."""
+        mode = self._get_mode_for_call_id(call_id)
+        if mode == "message":
+            if self._message_manager is None:
+                raise RuntimeError("MessageManager not available for message mode")
+            result = await self._message_manager.continue_call(
+                call_id=call_id, message=message
+            )
+            self._touch_session_by_call_id(call_id)
+            return result
+
         agent_session = self._find_session_by_call_id(call_id)
         voice = self.resolve_voice(agent_session.session_id) if agent_session else None
         result = await self._call_manager.continue_call(
@@ -318,7 +398,17 @@ class SessionManager:
     async def speak_to_user(
         self, call_id: str, message: str
     ) -> dict[str, Any]:
-        """Speak without listening."""
+        """Speak/send without listening/waiting."""
+        mode = self._get_mode_for_call_id(call_id)
+        if mode == "message":
+            if self._message_manager is None:
+                raise RuntimeError("MessageManager not available for message mode")
+            result = await self._message_manager.speak_to_user(
+                call_id=call_id, message=message
+            )
+            self._touch_session_by_call_id(call_id)
+            return result
+
         agent_session = self._find_session_by_call_id(call_id)
         voice = self.resolve_voice(agent_session.session_id) if agent_session else None
         result = await self._call_manager.speak_to_user(
@@ -330,7 +420,20 @@ class SessionManager:
     async def end_call(
         self, call_id: str, message: str
     ) -> dict[str, Any]:
-        """End a call and clean up the agent session."""
+        """End a call/session and clean up the agent session."""
+        mode = self._get_mode_for_call_id(call_id)
+        if mode == "message":
+            if self._message_manager is None:
+                raise RuntimeError("MessageManager not available for message mode")
+            agent_session = self._find_session_by_call_id(call_id)
+            result = await self._message_manager.end_call(
+                call_id=call_id, message=message
+            )
+            if agent_session:
+                self.unregister_session(agent_session.session_id)
+            return result
+
+        # Voice mode
         # Find the agent session before ending (CallManager removes it)
         agent_session = self._find_session_by_call_id(call_id)
         voice = self.resolve_voice(agent_session.session_id) if agent_session else None
@@ -369,9 +472,11 @@ class SessionManager:
         return f"{base}-{count}"
 
     def _find_session_by_call_id(self, call_id: str) -> AgentSession | None:
-        """Find the agent session linked to a call_id."""
+        """Find the agent session linked to a call_id (voice or message)."""
         for session in self._sessions.values():
             if session.call_session and session.call_session.call_id == call_id:
+                return session
+            if session.message_session and session.message_session.call_id == call_id:
                 return session
         return None
 
