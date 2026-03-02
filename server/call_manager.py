@@ -230,6 +230,8 @@ class CallManager:
         except Exception as exc:
             log.warning("Unexpected error during chime playback: %s", exc)
 
+    _MAX_BLANK_RETRIES = 3
+
     async def _stt_listen(
         self,
         voice_client: discord.VoiceClient,
@@ -242,6 +244,9 @@ class CallManager:
           2. Streaming audio through Silero VAD for speech boundary detection
           3. Transcribing with Faster-Whisper
           4. Applying LLM-based corrections via the user's correction dictionary
+
+        If the transcript is blank (silence / noise), retries up to
+        ``_MAX_BLANK_RETRIES`` times before returning empty.
 
         After the transcript is returned, plays a short chime to signal to
         the user that recording has finished (if chime is enabled in config).
@@ -284,16 +289,32 @@ class CallManager:
                 log.warning("Failed to play clear chime: %s", exc)
 
         user_id = str(user.id)
-        transcript = await self._stt.listen(
-            voice_client=voice_client,
-            user=user,
-            user_id=user_id,
-            speech_mode=self._speech_mode,
-            on_clear=on_clear,
-        )
+
+        for attempt in range(1, self._MAX_BLANK_RETRIES + 1):
+            transcript = await self._stt.listen(
+                voice_client=voice_client,
+                user=user,
+                user_id=user_id,
+                speech_mode=self._speech_mode,
+                on_clear=on_clear,
+            )
+
+            if transcript and transcript.strip():
+                break
+
+            if attempt < self._MAX_BLANK_RETRIES:
+                log.info(
+                    "Blank transcript on attempt %d/%d, re-listening",
+                    attempt, self._MAX_BLANK_RETRIES,
+                )
+            else:
+                log.warning(
+                    "Blank transcript after %d attempts, returning empty",
+                    self._MAX_BLANK_RETRIES,
+                )
 
         # Play "recording done" chime after STT completes
-        if smc.chime_enabled and transcript:
+        if smc.chime_enabled and transcript and transcript.strip():
             chime_audio = generate_chime(
                 smc.chime_frequency_hz,
                 smc.chime_duration_ms,
